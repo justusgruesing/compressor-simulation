@@ -283,19 +283,55 @@ def main():
     lb = np.array([0.01, 0.01, 0.0,   1e-12, 1e-12, 1e-9,  0.0,  0.0], dtype=float)
     ub = np.array([500.0, 500.0, 50.0, 1e-6,  1e-6,  1e-3,  1.0,  5000.0], dtype=float)
 
+    x_scale = np.array([
+        16.0,  # Ua_suc_ref ~ O(10)
+        14.0,  # Ua_dis_ref ~ O(10)
+        0.36,  # Ua_amb ~ O(0.1)
+        1e-8,  # A_tot ~ O(1e-8..1e-9)
+        1e-7,  # A_dis ~ O(1e-7..1e-8)
+        1e-5,  # V_IC ~ O(1e-5)
+        0.16,  # alpha_loss ~ O(0.1)
+        83.0  # W_dot_loss_ref ~ O(100)
+    ], dtype=float)
+
+    last_x = {"x": None}
+    call_counter = {"n": 0}
+
     def fun(x):
-        return residuals_for_dataset(
+        r = residuals_for_dataset(
             x=x, rows=rows, med=med,
             model=args.model, N_max_hz=N_max_hz, V_h_m3=V_h_m3
         )
+
+        call_counter["n"] += 1
+
+        if args.debug:
+            cost = 0.5 * float(np.dot(r, r))
+
+            if last_x["x"] is None:
+                dx = np.zeros_like(x)
+            else:
+                dx = x - last_x["x"]
+
+            print("\n--- fun(x) call", call_counter["n"], "---")
+            print(f"cost = {cost:.6e}")
+            print("x and Δx (current step):")
+            for name, xi, dxi in zip(PARAM_NAMES, x, dx):
+                print(f"  {name:>14s} = {xi: .6e}   Δ={dxi: .3e}")
+
+            last_x["x"] = x.copy()
+
+        return r
 
     result = least_squares(
         fun,
         x0=x0,
         bounds=(lb, ub),
         method="trf",
-        ftol=1e-6,
-        xtol=1e-6,
+        x_scale=x_scale,
+        ftol=args.ftol,
+        xtol=args.xtol,
+        gtol=args.gtol,
         max_nfev=args.max_nfev,
         verbose=2,
     )

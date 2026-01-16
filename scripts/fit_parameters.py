@@ -191,12 +191,31 @@ def read_dataset_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, sep=";", header=1, decimal=",")
 
 
+def load_x0_csv(path: Path) -> np.ndarray:
+    """
+    Load start values for the 8 fit parameters from start_params.csv
+    """
+    df0 = pd.read_csv(path)  # comma-separated typical
+    if len(df0) != 1:
+        raise ValueError("x0 CSV must contain exactly one row.")
+
+    missing = [n for n in PARAM_NAMES if n not in df0.columns]
+    if missing:
+        raise ValueError(f"x0 CSV missing columns: {missing}")
+
+    row = df0.iloc[0]
+    x0 = np.array([float(row[n]) for n in PARAM_NAMES], dtype=float)
+    return x0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Fit 8 Molinaroli parameters (SciPy least_squares) - CSV only outputs")
 
     ap.add_argument("--csv", required=True, help="Path to Datensatz_Fitting.csv")
     ap.add_argument("--model", default="original", help="original | modified")
     ap.add_argument("--refrigerant", default="R290")
+
+    ap.add_argument("--x0_csv", default=None, help="Path to one-row CSV with start values for the 8 parameters")
 
     ap.add_argument("--oil", default="all", help="LPG100 | LPG68 | all")
 
@@ -278,10 +297,18 @@ def main():
 
     med = CoolProp(fluid_name=args.refrigerant)
 
-    x0 = np.array([DEFAULT_PARAMS[n] for n in PARAM_NAMES], dtype=float)
+    # Optional: start values from CSV
+    if args.x0_csv is not None:
+        x0_path = Path(args.x0_csv)
+        if not x0_path.exists():
+            raise FileNotFoundError(x0_path)
+        x0 = load_x0_csv(x0_path)
+
 
     lb = np.array([0.01, 0.01, 0.0,   1e-12, 1e-12, 1e-9,  0.0,  0.0], dtype=float)
     ub = np.array([500.0, 500.0, 50.0, 1e-6,  1e-6,  1e-3,  1.0,  5000.0], dtype=float)
+
+    x0 = np.maximum(lb, np.minimum(ub, x0))
 
     x_scale = np.array([
         16.0,  # Ua_suc_ref ~ O(10)
@@ -323,6 +350,8 @@ def main():
 
         return r
 
+    print("Using x0:", dict(zip(PARAM_NAMES, x0)))
+
     result = least_squares(
         fun,
         x0=x0,
@@ -356,9 +385,9 @@ def main():
     # Output paths (CSV only)
     Path("results").mkdir(parents=True, exist_ok=True)
     if args.out_params_csv is None:
-        args.out_params_csv = f"results/fitted_params_{args.oil.lower()}_{args.model.lower()}.csv"
+        args.out_params_csv = f"results/fitted_params_{args.oil.lower()}_{args.model.lower()}_1.csv"
     if args.out_pred_csv is None:
-        args.out_pred_csv = f"results/fit_predictions_{args.oil.lower()}_{args.model.lower()}.csv"
+        args.out_pred_csv = f"results/fit_predictions_{args.oil.lower()}_{args.model.lower()}_1.csv"
 
     # Save params as ONE-ROW CSV
     pd.DataFrame([fitted]).to_csv(args.out_params_csv, index=False)

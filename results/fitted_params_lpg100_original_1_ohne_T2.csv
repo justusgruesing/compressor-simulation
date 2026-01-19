@@ -1,0 +1,2 @@
+Ua_suc_ref,Ua_dis_ref,Ua_amb,A_tot,A_dis,V_IC,alpha_loss,W_dot_loss_ref,m_dot_ref,f_ref,T_ref,m_dot_ref_definition,oil_fit_mode,N_max_rpm,N_max_hz,V_h_cm3,V_h_m3,refrigerant,model,success,message,cost,n_points
+9.999975149744424,9.999967543660144,0.500002949435561,1.1704111315381512e-07,4.5438340711739963e-08,3.070092350029294e-05,0.16000094051685276,100.00005692119153,,50.0,273.15,"rho_sat_vapor(T=273.15K,Q=1)*V_h*f_ref",LPG100,7200.0,120.0,30.7,3.07e-05,R290,original,True,`xtol` termination condition is satisfied.,0.007416096486497818,18

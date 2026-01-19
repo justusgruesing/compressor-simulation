@@ -13,7 +13,7 @@
 #
 # Datasheet defaults:
 #   N_max = 7200 rpm
-#   V_h   = 30.7 cm^3  (= 30.7e-6 m^3)
+#   V_h   = 30.7 cm^3
 
 import argparse
 from dataclasses import dataclass
@@ -31,7 +31,7 @@ from vclibpy.components.compressors import (
 )
 
 # =========================
-# CSV columns (as in your file)
+# CSV columns
 # =========================
 OIL_COL = "Ölbezeichnung"
 
@@ -130,7 +130,7 @@ def make_compressor(model: str, N_max_hz: float, V_h_m3: float, params: dict):
 
 
 # =========================
-# m_dot_ref = rho_sat_vapor(T_REF,Q=1)*V_h*f_ref
+# calculation of m_dot_ref
 # =========================
 def compute_m_dot_ref(med: CoolProp, V_h_m3: float) -> float:
     st = med.calc_state("TQ", T_REF, Q_REF)
@@ -197,7 +197,7 @@ def residuals_for_dataset(
 
 
 def read_dataset_csv(path: Path) -> pd.DataFrame:
-    # CSV has an extra units row -> header is the 2nd line (index 1)
+
     return pd.read_csv(path, sep=";", header=1, decimal=",")
 
 

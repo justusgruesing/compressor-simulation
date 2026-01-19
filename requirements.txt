@@ -1,5 +1,6 @@
 numpy<=2.0
-matplotlib>=3.3.4
-coolprop>=6.4.1
-pandas>=1.2.1
-ctREFPROP>=0.10.2
+scipy
+pandas
+matplotlib
+CoolProp
+vclibpy @ git+https://github.com/<USER_OR_ORG>/VCLibPy.git@add_the_lubricant_influence

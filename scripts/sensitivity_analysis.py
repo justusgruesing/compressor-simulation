@@ -11,7 +11,10 @@ from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor,
     Molinaroli_2017_Compressor_Modified,
 )
-# run script: python scripts/sensitivity_analysis.py --csv data/Datensatz_Fitting_1.csv --oil LPG100 --model original --delta 0.5 --params_csv results/fitted_params_lpg100_original.csv
+
+# run script example:
+# python scripts/sensitivity_analysis.py --csv data/Datensatz_Fitting_1.csv --oil LPG100 --model original --delta 0.5 --params_csv results/fitted_params_lpg100_original2.csv
+
 # =========================
 # CSV columns (your file)
 # =========================
@@ -176,11 +179,16 @@ def build_rows(df: pd.DataFrame):
     return rows
 
 # =========================
-# Objective function g (paper-style)
+# Metrics / Objective
 # g = (0.5/n) * sum( e_m^2 + e_W^2 )
-# with e_m = m_calc/m_meas - 1, e_W = W_calc/W_meas - 1
+# e_m = m_calc/m_meas - 1
+# e_W = W_calc/W_meas - 1
+#
+# Erweiterung:
+#  - em_rms = sqrt( (1/n) * sum(e_m^2) )
+#  - eW_rms = sqrt( (1/n) * sum(e_W^2) )
 # =========================
-def objective_g(rows, med, model, params, N_max_hz, V_h_m3, fail_penalty=10.0):
+def evaluate_metrics(rows, med, model, params, N_max_hz, V_h_m3, fail_penalty=10.0):
     em2 = 0.0
     eW2 = 0.0
     n_ok = 0
@@ -201,20 +209,34 @@ def objective_g(rows, med, model, params, N_max_hz, V_h_m3, fail_penalty=10.0):
             n_ok += 1
         except Exception:
             n_fail += 1
-            # penalize failed points
+            # Penalize failed points (keeps metric finite + marks instability)
             em2 += fail_penalty * fail_penalty
             eW2 += fail_penalty * fail_penalty
 
     n_total = n_ok + n_fail
     if n_total == 0:
-        return np.inf, 0, 0
+        return {
+            "g": np.inf,
+            "em_rms": np.inf,
+            "eW_rms": np.inf,
+            "n_fail": 0,
+            "n_total": 0,
+        }
 
     g = 0.5 * (em2 + eW2) / float(n_total)
-    return float(g), int(n_fail), int(n_total)
+    em_rms = np.sqrt(em2 / float(n_total))
+    eW_rms = np.sqrt(eW2 / float(n_total))
 
+    return {
+        "g": float(g),
+        "em_rms": float(em_rms),
+        "eW_rms": float(eW_rms),
+        "n_fail": int(n_fail),
+        "n_total": int(n_total),
+    }
 
 def sensitivity_delta(rows, med, model, params_base, N_max_hz, V_h_m3, delta=0.05, fail_penalty=10.0):
-    g0, fail0, n0 = objective_g(rows, med, model, params_base, N_max_hz, V_h_m3, fail_penalty=fail_penalty)
+    base = evaluate_metrics(rows, med, model, params_base, N_max_hz, V_h_m3, fail_penalty=fail_penalty)
 
     out = []
     for name in PARAM_NAMES:
@@ -226,33 +248,53 @@ def sensitivity_delta(rows, med, model, params_base, N_max_hz, V_h_m3, delta=0.0
         pA = dict(params_base); pA[name] = p_plus
         pB = dict(params_base); pB[name] = p_minus
 
-        g_plus, fail_plus, n_plus = objective_g(rows, med, model, pA, N_max_hz, V_h_m3, fail_penalty=fail_penalty)
-        g_minus, fail_minus, n_minus = objective_g(rows, med, model, pB, N_max_hz, V_h_m3, fail_penalty=fail_penalty)
+        plus = evaluate_metrics(rows, med, model, pA, N_max_hz, V_h_m3, fail_penalty=fail_penalty)
+        minus = evaluate_metrics(rows, med, model, pB, N_max_hz, V_h_m3, fail_penalty=fail_penalty)
+
+        g0 = base["g"]
+        em0 = base["em_rms"]
+        eW0 = base["eW_rms"]
 
         out.append({
             "param": name,
             "p_base": p0,
             "p_plus": p_plus,
             "p_minus": p_minus,
-            "g_base": g0,
-            "g_plus": g_plus,
-            "g_minus": g_minus,
-            "g_plus_norm": g_plus / g0 if g0 > 0 else np.nan,
-            "g_minus_norm": g_minus / g0 if g0 > 0 else np.nan,
-            "fail_base": fail0,
-            "fail_plus": fail_plus,
-            "fail_minus": fail_minus,
-            "n_total": n0,
-            "fail_rate_base": fail0 / n0 if n0 > 0 else np.nan,
-            "fail_rate_plus": fail_plus / n_plus if n_plus > 0 else np.nan,
-            "fail_rate_minus": fail_minus / n_minus if n_minus > 0 else np.nan,
+
+            # Overall objective (like paper)
+            "g_base": base["g"],
+            "g_plus": plus["g"],
+            "g_minus": minus["g"],
+            "g_plus_norm": plus["g"] / g0 if np.isfinite(g0) and g0 > 0 else np.nan,
+            "g_minus_norm": minus["g"] / g0 if np.isfinite(g0) and g0 > 0 else np.nan,
+
+            # Separate output influences (RMS relative errors)
+            "em_rms_base": base["em_rms"],
+            "em_rms_plus": plus["em_rms"],
+            "em_rms_minus": minus["em_rms"],
+            "em_rms_plus_norm": plus["em_rms"] / em0 if np.isfinite(em0) and em0 > 0 else np.nan,
+            "em_rms_minus_norm": minus["em_rms"] / em0 if np.isfinite(em0) and em0 > 0 else np.nan,
+
+            "eW_rms_base": base["eW_rms"],
+            "eW_rms_plus": plus["eW_rms"],
+            "eW_rms_minus": minus["eW_rms"],
+            "eW_rms_plus_norm": plus["eW_rms"] / eW0 if np.isfinite(eW0) and eW0 > 0 else np.nan,
+            "eW_rms_minus_norm": minus["eW_rms"] / eW0 if np.isfinite(eW0) and eW0 > 0 else np.nan,
+
+            # Fail statistics
+            "fail_base": base["n_fail"],
+            "fail_plus": plus["n_fail"],
+            "fail_minus": minus["n_fail"],
+            "n_total": base["n_total"],
+        ##   "fail_rate_base": base["n_fail"] / base["n_total"] if base["n_total"] > 0 else np.nan,
+        ##   "fail_rate_plus": plus["n_fail"] / plus["n_total"] if plus["n_total"] > 0 else np.nan,
+        ##   "fail_rate_minus": minus["n_fail"] / minus["n_total"] if minus["n_total"] > 0 else np.nan,
         })
 
-    return g0, pd.DataFrame(out)
-
+    return base, pd.DataFrame(out)
 
 def main():
-    ap = argparse.ArgumentParser(description="Molinaroli sensitivity analysis (±5% per parameter), normalized g like paper.")
+    ap = argparse.ArgumentParser(description="Molinaroli sensitivity analysis (±delta per parameter). Outputs g + separate m_dot and Pel influence.")
 
     ap.add_argument("--csv", required=True, help="Dataset CSV (with units row + header row)")
     ap.add_argument("--model", default="original", help="original | modified")
@@ -266,6 +308,7 @@ def main():
 
     ap.add_argument("--delta", type=float, default=0.05, help="Relative variation for sensitivity (default: 0.05 => ±5%)")
     ap.add_argument("--out", default="results/sensitivity", help="Output folder")
+    ap.add_argument("--fail_penalty", type=float, default=10.0, help="Penalty (relative) used when a point fails to simulate")
 
     args = ap.parse_args()
 
@@ -310,22 +353,26 @@ def main():
         subsets = [(sel, df[df[OIL_COL].astype(str) == sel])]
 
     # Run analysis
-    for name, df_sub in subsets:
+    for subset_name, df_sub in subsets:
         rows = build_rows(df_sub)
         if len(rows) == 0:
-            print(f"[WARN] no valid rows for subset: {name}")
+            print(f"[WARN] no valid rows for subset: {subset_name}")
             continue
 
-        g0, sens_df = sensitivity_delta(
+        base_metrics, sens_df = sensitivity_delta(
             rows=rows, med=med, model=args.model, params_base=params_base,
-            N_max_hz=N_max_hz, V_h_m3=V_h_m3, delta=args.delta
+            N_max_hz=N_max_hz, V_h_m3=V_h_m3, delta=args.delta,
+            fail_penalty=args.fail_penalty
         )
 
-        out_csv = out_dir / f"sensitivity_{name.lower()}_{args.model.lower()}.csv"
+        out_csv = out_dir / f"sensitivity_{subset_name.lower()}_{args.model.lower()}.csv"
         sens_df.to_csv(out_csv, index=False)
 
-        print(f"\n=== Sensitivity done: {name} ===")
-        print(f"g_base = {g0:.6e}")
+        print(f"\n=== Sensitivity done: {subset_name} ===")
+        print(f"base g     = {base_metrics['g']:.6e}")
+        print(f"base em_rms= {base_metrics['em_rms']:.6e}")
+        print(f"base eW_rms= {base_metrics['eW_rms']:.6e}")
+        print(f"fails      = {base_metrics['n_fail']}/{base_metrics['n_total']}")
         print(f"saved: {out_csv}")
 
 if __name__ == "__main__":

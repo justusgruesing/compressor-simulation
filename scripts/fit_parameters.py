@@ -1,12 +1,12 @@
 # Fits 8 Molinaroli parameters using SciPy least_squares.
 # Input:  your CSV (with a units row -> header is 2nd line)
 # Output: ONLY CSV files:
-#   - results/fitted_params_<oil>_<model>.csv   (one row with parameter values)
-#   - results/fit_predictions_<oil>_<model>.csv (measured vs predicted + relative residuals)
+#   - results/fitted_params_<oil>_<model>[...].csv   (one row with parameter values)
+#   - results/fit_predictions_<oil>_<model>[...].csv (measured vs predicted + relative residuals)
 #
 # Units (fixed to your dataset):
 #   P1_mean, P2_mean: bar
-#   T1_mean, Tamb_mean: °C
+#   T1_mean, Tamb_mean, T2_mean: °C
 #   suction_mf_mean: g/s
 #   Pel_mean: W
 #   N: 1/min (rpm)
@@ -85,11 +85,11 @@ DEFAULT_PARAMS = {
     "Ua_dis_ref": 13.96,
     "Ua_amb": 0.36,
     "A_tot": 9.47e-9,
-    "A_dis": 86.1e-9,
+    "A_dis": 86.1e-6,       # corrected
     "V_IC": 16.11e-6,
     "alpha_loss": 0.16,
     "W_dot_loss_ref": 83.0,
-    "m_dot_ref": None,   # computed from paper definition
+    "m_dot_ref": None,      # computed from paper definition
     "f_ref": F_REF,
 }
 
@@ -165,10 +165,12 @@ def simulate_point(
 
 
 # Residuals (relative errors, equal weighting)
-# m_flow, P_el, T_dis
+# Default: m_flow + P_el
+# Optional: + T_dis (if use_t_dis=True)
 def residuals_for_dataset(
     x: np.ndarray, rows: list[dict], med: CoolProp,
-    model: str, N_max_hz: float, V_h_m3: float
+    model: str, N_max_hz: float, V_h_m3: float,
+    use_t_dis: bool
 ) -> np.ndarray:
     params_base = x_to_params(x)
     res = []
@@ -184,20 +186,21 @@ def residuals_for_dataset(
 
             m_meas = row["m_meas"]
             P_meas = row["P_meas"]
-            T_dis_meas = row["T_dis_meas_K"]
 
             res.append((m_calc / m_meas) - 1.0)
             res.append((P_calc / P_meas) - 1.0)
-            res.append((T_dis_calc / T_dis_meas) - 1.0)
+
+            if use_t_dis:
+                T_dis_meas = row["T_dis_meas_K"]
+                res.append((T_dis_calc / T_dis_meas) - 1.0)
 
         except Exception:
-            res.extend([10.0, 10.0, 10.0])
+            res.extend([10.0, 10.0] + ([10.0] if use_t_dis else []))
 
     return np.asarray(res, dtype=float)
 
 
 def read_dataset_csv(path: Path) -> pd.DataFrame:
-
     return pd.read_csv(path, sep=";", header=1, decimal=",")
 
 
@@ -205,7 +208,7 @@ def load_x0_csv(path: Path) -> np.ndarray:
     """
     Load start values for the 8 fit parameters from start_params.csv (one row).
     """
-    df0 = pd.read_csv(path)  # comma-separated typical
+    df0 = pd.read_csv(path)
     if len(df0) != 1:
         raise ValueError("x0 CSV must contain exactly one row.")
 
@@ -218,7 +221,9 @@ def load_x0_csv(path: Path) -> np.ndarray:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Fit Molinaroli parameters (SciPy least_squares) - CSV only outputs (m_flow, P_el, T_dis)")
+    ap = argparse.ArgumentParser(
+        description="Fit Molinaroli parameters (SciPy least_squares). Residuals: m_flow, P_el (default) + optional T_dis."
+    )
 
     ap.add_argument("--csv", required=True, help="Path to dataset CSV")
     ap.add_argument("--model", default="original", help="original | modified")
@@ -226,6 +231,15 @@ def main():
 
     ap.add_argument("--x0_csv", default=None, help="One-row CSV with start values for the 8 parameters")
     ap.add_argument("--oil", default="all", help="LPG100 | LPG68 | all")
+
+    # Default OFF now:
+    ap.add_argument(
+        "--use_t_dis",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="0 = fit only m_flow and P_el (default). 1 = include T_dis as additional residual (needs T2_mean)."
+    )
 
     # Datasheet defaults:
     ap.add_argument("--N_max_rpm", type=float, default=7200.0, help="Max speed [1/min] (default: 7200)")
@@ -245,6 +259,7 @@ def main():
     ap.add_argument("--debug", action="store_true", help="Print debug info every function evaluation")
 
     args = ap.parse_args()
+    use_t_dis = bool(args.use_t_dis)
 
     csv_path = Path(args.csv)
     if not csv_path.exists():
@@ -259,9 +274,12 @@ def main():
     if args.max_rows is not None:
         df = df.head(args.max_rows)
 
-    # Required columns
-    required = [OIL_COL, P_SUC_COL, T_SUC_COL, P_OUT_COL, T_AMB_COL, T_DIS_COL,
+    # Required columns depend on use_t_dis
+    required = [OIL_COL, P_SUC_COL, T_SUC_COL, P_OUT_COL, T_AMB_COL,
                 M_FLOW_MEAS_COL, P_EL_MEAS_COL, SPEED_COL]
+    if use_t_dis:
+        required.append(T_DIS_COL)
+
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"CSV missing columns: {missing}")
@@ -281,27 +299,33 @@ def main():
         p_out_pa = bar_to_pa(r[P_OUT_COL])
         T_suc_K = c_to_k(r[T_SUC_COL])
         T_amb_K = c_to_k(r[T_AMB_COL])
-        T_dis_meas_K = c_to_k(r[T_DIS_COL])
 
         f_oper_hz = rpm_to_hz(r[SPEED_COL])
 
         m_meas = gs_to_kgps(r[M_FLOW_MEAS_COL])
         P_meas = float(r[P_EL_MEAS_COL])
 
-        if m_meas <= 0 or P_meas <= 0 or T_dis_meas_K <= 0:
+        if m_meas <= 0 or P_meas <= 0:
             continue
 
-        rows.append({
+        rowd = {
             "oil": r[OIL_COL],
             "p_suc_pa": p_suc_pa,
             "T_suc_K": T_suc_K,
             "p_out_pa": p_out_pa,
             "T_amb_K": T_amb_K,
-            "T_dis_meas_K": T_dis_meas_K,
             "f_oper_hz": f_oper_hz,
             "m_meas": m_meas,
             "P_meas": P_meas,
-        })
+        }
+
+        if use_t_dis:
+            T_dis_meas_K = c_to_k(r[T_DIS_COL])
+            if T_dis_meas_K <= 0:
+                continue
+            rowd["T_dis_meas_K"] = T_dis_meas_K
+
+        rows.append(rowd)
 
     if len(rows) == 0:
         raise ValueError("No valid rows after unit conversion/filtering.")
@@ -318,8 +342,9 @@ def main():
             raise FileNotFoundError(x0_path)
         x0 = load_x0_csv(x0_path)
 
-    lb = np.array([0.01, 0.01, 0.0,   1e-12, 1e-12, 1e-9,  0.0,  0.0], dtype=float)
-    ub = np.array([500.0, 500.0, 50.0, 1e-6,  1e-6,  1e-3,  1.0,  5000.0], dtype=float)
+    # Bounds (updated for A_dis magnitude)
+    lb = np.array([0.01, 0.01, 0.0,   1e-12, 1e-8, 1e-9,  0.0,  0.0], dtype=float)
+    ub = np.array([500.0, 500.0, 50.0, 1e-6,  1e-3,  1e-3,  1.0,  5000.0], dtype=float)
 
     # Clip x0 into bounds
     x0 = np.maximum(lb, np.minimum(ub, x0))
@@ -329,7 +354,7 @@ def main():
         14.0,   # Ua_dis_ref
         0.36,   # Ua_amb
         1e-8,   # A_tot
-        1e-7,   # A_dis
+        1e-4,   # A_dis (≈ 8.6e-5)
         1e-5,   # V_IC
         0.16,   # alpha_loss
         83.0    # W_dot_loss_ref
@@ -341,7 +366,8 @@ def main():
     def fun(x):
         r = residuals_for_dataset(
             x=x, rows=rows, med=med,
-            model=args.model, N_max_hz=N_max_hz, V_h_m3=V_h_m3
+            model=args.model, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
+            use_t_dis=use_t_dis
         )
 
         call_counter["n"] += 1
@@ -364,6 +390,7 @@ def main():
         return r
 
     print("Using x0:", dict(zip(PARAM_NAMES, x0)))
+    print("use_t_dis:", use_t_dis)
 
     result = least_squares(
         fun,
@@ -390,6 +417,7 @@ def main():
     fitted["V_h_m3"] = V_h_m3
     fitted["refrigerant"] = args.refrigerant
     fitted["model"] = args.model
+    fitted["use_t_dis"] = int(use_t_dis)
     fitted["success"] = bool(result.success)
     fitted["message"] = str(result.message)
     fitted["cost"] = float(result.cost)
@@ -397,10 +425,11 @@ def main():
 
     # Output paths
     Path("results").mkdir(parents=True, exist_ok=True)
+    suffix = "_with_t_dis" if use_t_dis else ""
     if args.out_params_csv is None:
-        args.out_params_csv = f"results/fitted_params_{args.oil.lower()}_{args.model.lower()}_with_t_dis.csv"
+        args.out_params_csv = f"results/fitted_params_{args.oil.lower()}_{args.model.lower()}{suffix}.csv"
     if args.out_pred_csv is None:
-        args.out_pred_csv = f"results/fit_predictions_{args.oil.lower()}_{args.model.lower()}_with_t_dis.csv"
+        args.out_pred_csv = f"results/fit_predictions_{args.oil.lower()}_{args.model.lower()}{suffix}.csv"
 
     pd.DataFrame([fitted]).to_csv(args.out_params_csv, index=False)
 
@@ -414,7 +443,7 @@ def main():
             f_oper_hz=row["f_oper_hz"], T_amb_K=row["T_amb_K"],
         )
 
-        pred.append({
+        out = {
             "oil": row["oil"],
             "f_oper_hz": row["f_oper_hz"],
             "p_suc_bar": row["p_suc_pa"] / 1e5,
@@ -429,11 +458,16 @@ def main():
             "P_meas_W": row["P_meas"],
             "P_calc_W": P_calc,
             "e_P_rel": (P_calc / row["P_meas"]) - 1.0,
+        }
 
-            "T_dis_meas_C": row["T_dis_meas_K"] - 273.15,
-            "T_dis_calc_C": T_dis_calc - 273.15,
-            "e_T_dis_rel": (T_dis_calc / row["T_dis_meas_K"]) - 1.0,
-        })
+        if use_t_dis:
+            out.update({
+                "T_dis_meas_C": row["T_dis_meas_K"] - 273.15,
+                "T_dis_calc_C": T_dis_calc - 273.15,
+                "e_T_dis_rel": (T_dis_calc / row["T_dis_meas_K"]) - 1.0,
+            })
+
+        pred.append(out)
 
     pd.DataFrame(pred).to_csv(args.out_pred_csv, index=False)
 
@@ -442,6 +476,7 @@ def main():
     print("success:", result.success)
     print("message:", result.message)
     print("cost:", result.cost)
+    print("use_t_dis:", use_t_dis)
     print("saved params CSV:", args.out_params_csv)
     print("saved predictions CSV:", args.out_pred_csv)
 

@@ -67,7 +67,7 @@ DEFAULT_PARAMS = {
     "Ua_dis_ref": 13.96,
     "Ua_amb": 0.36,
     "A_tot": 9.47e-9,
-    "A_dis": 86.1e-9,
+    "A_dis": 86.1e-6,
     "V_IC": 16.11e-6,
     "alpha_loss": 0.16,
     "W_dot_loss_ref": 83.0,

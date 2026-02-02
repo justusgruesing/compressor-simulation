@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from datetime import datetime
+
+
 from vclibpy.media.cool_prop import CoolProp
 from vclibpy.datamodels import FlowsheetState
 from vclibpy.components.compressors import (
@@ -312,6 +315,8 @@ def main():
 
     args = ap.parse_args()
 
+    run_id = datetime.now().strftime("%Y-%m-%d")
+
     csv_path = Path(args.csv)
     if not csv_path.exists():
         raise FileNotFoundError(csv_path)
@@ -365,7 +370,7 @@ def main():
             fail_penalty=args.fail_penalty
         )
 
-        out_csv = out_dir / f"sensitivity_{subset_name.lower()}_{args.model.lower()}.csv"
+        out_csv = out_dir / f"sensitivity_{subset_name.lower()}_{args.model.lower()}_{run_id}.csv"
         sens_df.to_csv(out_csv, index=False)
 
         print(f"\n=== Sensitivity done: {subset_name} ===")

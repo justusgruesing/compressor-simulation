@@ -109,9 +109,9 @@ X_SCALE_MANUAL_ALL = np.array([
 ], dtype=float)
 
 # Stages
-STAGE_1 = ["A_tot", "A_dis", "V_IC", "alpha_loss", "W_dot_loss_ref"]
+STAGE_1 = ["A_tot", "A_dis", "V_IC", "W_dot_loss_ref"]
 STAGE_2 = ["Ua_suc_ref", "Ua_dis_ref", "Ua_amb"]
-STAGE_3 = PARAM_NAMES[:]  # all
+STAGE_3 = ["A_tot", "A_dis", "V_IC", "W_dot_loss_ref", "Ua_suc_ref", "Ua_dis_ref", "Ua_amb"]
 
 
 # =========================
@@ -590,3 +590,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

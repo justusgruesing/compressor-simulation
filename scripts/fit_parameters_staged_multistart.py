@@ -5,6 +5,8 @@
 #   - results/fitted_params_<oil>_<model>_gridbest_<runid>.csv
 #   - results/fit_predictions_<oil>_<model>_gridbest_<runid>.csv
 #
+# python scripts/fit_parameters_staged_multistart.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --grid --grid_csv data/grid_alpha_wloss_3x3_50_125_200.csv --x_scale jac --use_t_dis --w_T_dis 1.0 --max_nfev 5000
+#
 # Units (fixed to your dataset):
 #   P1_mean, P2_mean: bar
 #   T1_mean, Tamb_mean, T2_mean: °C
@@ -105,11 +107,13 @@ X_SCALE_MANUAL_ALL = np.array([
     83.0    # W_dot_loss_ref
 ], dtype=float)
 
-# Stages
-STAGE_A = ["alpha_loss", "W_dot_loss_ref"]  # NEW: only these 2, Pel-only residual
+# =========================
+# Stages (NO STAGE A)
+# =========================
 STAGE_1 = ["A_tot", "A_dis", "V_IC", "alpha_loss", "W_dot_loss_ref"]
 STAGE_2 = ["Ua_suc_ref", "Ua_dis_ref", "Ua_amb"]
 STAGE_3 = PARAM_NAMES[:]  # all
+
 
 # =========================
 # Helpers for packing/slicing
@@ -211,23 +215,28 @@ def load_grid_csv(path: Path) -> list[tuple[float, float]]:
     """
     Grid CSV MUST contain columns:
       alpha_loss, W_dot_loss_ref
-    and must contain exactly 49 rows (7x7) for your requirement.
+
+    The CSV may contain ANY number of rows (e.g. 3x3 => 9, 7x7 => 49, ...).
+    Each row defines one multistart seed (alpha_loss, W_dot_loss_ref).
     """
     df = pd.read_csv(path)
+
     required = ["alpha_loss", "W_dot_loss_ref"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Grid CSV missing columns: {missing}. Required: {required}")
 
-    if len(df) != 49:
-        raise ValueError(f"Grid CSV must contain exactly 49 rows (7x7). Got: {len(df)}")
+    if len(df) < 1:
+        raise ValueError("Grid CSV must contain at least 1 row.")
 
     out = []
     for _, r in df.iterrows():
         a = float(r["alpha_loss"])
         w = float(r["W_dot_loss_ref"])
         out.append((a, w))
+
     return out
+
 
 # =========================
 # Residuals
@@ -372,14 +381,18 @@ def main():
     ap.add_argument("--x0_csv", default=None, help="One-row CSV with start values (any subset of the 8 params)")
     ap.add_argument("--oil", default="all", help="LPG100 | LPG68 | all")
 
-    ap.add_argument("--use_t_dis", action="store_true", help="Include T_dis as additional residual (Stage B only)")
+    ap.add_argument("--use_t_dis", action="store_true", help="Include T_dis as additional residual")
     ap.add_argument("--w_T_dis", type=float, default=1.0, help="Weight factor for T_dis residual (only if --use_t_dis)")
 
     ap.add_argument("--staged", action="store_true", help="Run staged fitting (only relevant if NOT using --grid)")
     ap.add_argument("--x_scale", default="manual", choices=["manual", "jac"], help="Parameter scaling")
 
-    ap.add_argument("--grid", action="store_true", help="Run grid multistart using --grid_csv (CSV only). Runs Stage A + Stage B for each grid point.")
-    ap.add_argument("--grid_csv", default=None, help="CSV with exactly 49 rows (7x7): columns alpha_loss, W_dot_loss_ref")
+    ap.add_argument(
+        "--grid",
+        action="store_true",
+        help="Run grid multistart using --grid_csv (CSV only). Runs STAGE_1 -> STAGE_2 -> STAGE_3 for each grid point."
+    )
+    ap.add_argument("--grid_csv", default=None, help="CSV with any number of rows: columns alpha_loss, W_dot_loss_ref")
 
     ap.add_argument("--N_max_rpm", type=float, default=7200.0, help="Max speed [1/min]")
     ap.add_argument("--V_h_cm3", type=float, default=30.7, help="Displacement volume [cm^3]")
@@ -494,7 +507,8 @@ def main():
         grid_points = load_grid_csv(grid_path)
         print(f"\n=== GRID MODE ENABLED ===")
         print(f"grid_csv: {grid_path}")
-        print(f"grid points: {len(grid_points)} (expected 49)")
+        n_grid = len(grid_points)
+        print(f"grid points: {n_grid}")
 
         summary_rows = []
         best_cost = np.inf
@@ -506,7 +520,7 @@ def main():
 
         for gi, (alpha0, w0) in enumerate(grid_points):
             print(f"\n==============================")
-            print(f"[GRID {gi+1:02d}/49] start alpha_loss={alpha0:.6g}, W_dot_loss_ref={w0:.6g}")
+            print(f"[GRID {gi + 1:02d}/{n_grid}] start alpha_loss={alpha0:.6g}, W_dot_loss_ref={w0:.6g}")
             print(f"==============================")
 
             # start params for this grid point
@@ -514,24 +528,10 @@ def main():
             p0["alpha_loss"] = float(alpha0)
             p0["W_dot_loss_ref"] = float(w0)
 
-            # --- Stage A (Pel-only), fit ONLY (alpha_loss, W_dot_loss_ref)
-            pA, rA = run_least_squares_for_names(
-                fit_names=STAGE_A,
-                params_start_full=p0,
-                rows=rows, med=med, model=args.model,
-                N_max_hz=N_max_hz, V_h_m3=V_h_m3,
-                use_m_dot=False, use_p_el=True,
-                use_t_dis=False, w_t_dis=args.w_T_dis,
-                x_scale_mode=args.x_scale,
-                ftol=args.ftol, xtol=args.xtol, gtol=args.gtol,
-                max_nfev=args.max_nfev,
-                debug=args.debug
-            )
-
-            # --- Stage B (staged as before), fit m_dot + Pel (+ optional T_dis)
+            # --- STAGE 1
             pB1, rB1 = run_least_squares_for_names(
                 fit_names=STAGE_1,
-                params_start_full=pA,
+                params_start_full=p0,
                 rows=rows, med=med, model=args.model,
                 N_max_hz=N_max_hz, V_h_m3=V_h_m3,
                 use_m_dot=True, use_p_el=True,
@@ -541,6 +541,8 @@ def main():
                 max_nfev=args.max_nfev,
                 debug=args.debug
             )
+
+            # --- STAGE 2
             pB2, rB2 = run_least_squares_for_names(
                 fit_names=STAGE_2,
                 params_start_full=pB1,
@@ -553,6 +555,8 @@ def main():
                 max_nfev=args.max_nfev,
                 debug=args.debug
             )
+
+            # --- STAGE 3 (final)
             pF, rF = run_least_squares_for_names(
                 fit_names=STAGE_3,
                 params_start_full=pB2,
@@ -571,25 +575,26 @@ def main():
                 "alpha_start": alpha0,
                 "W_dot_loss_start": w0,
 
-                "alpha_after_A": float(pA["alpha_loss"]),
-                "W_dot_loss_after_A": float(pA["W_dot_loss_ref"]),
-                "cost_A": float(rA.cost),
-                "nfev_A": int(rA.nfev),
+                "cost_stage1": float(rB1.cost),
+                "nfev_stage1": int(rB1.nfev),
+
+                "cost_stage2": float(rB2.cost),
+                "nfev_stage2": int(rB2.nfev),
 
                 "cost_final": float(rF.cost),
                 "nfev_final": int(rF.nfev),
                 "success": bool(rF.success),
                 "message": str(rF.message),
             }
+
             # store final parameters
             for pn in PARAM_NAMES:
                 row_out[pn] = float(pF[pn])
 
             summary_rows.append(row_out)
 
-            # best selection by minimal cost (even if not success, but success preferred)
-            is_better = (float(rF.cost) < best_cost)
-            if is_better:
+            # best selection by minimal cost
+            if float(rF.cost) < best_cost:
                 best_cost = float(rF.cost)
                 best_params = dict(pF)
                 best_result = rF
@@ -686,8 +691,6 @@ def main():
     # =========================
     # NON-GRID MODE (single or staged)
     # =========================
-    # If you want staged here, use --staged. Otherwise single fit over all params.
-
     if args.staged:
         p1, _ = run_least_squares_for_names(
             fit_names=STAGE_1,
@@ -807,6 +810,6 @@ def main():
     print("saved params CSV:", params_csv)
     print("saved predictions CSV:", pred_csv)
 
+
 if __name__ == "__main__":
     main()
-

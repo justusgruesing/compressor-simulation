@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+plt.style.use('ebc.paper.mplstyle')
+
 
 def _ensure_out_dir(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,10 @@ def parity_plot(
     n_out = int(np.sum(outside))
     frac_out = float(n_out / n_total) if n_total else np.nan
 
+    # --- NEW: error span (min..max) in percent ---
+    err_min_pct = float(np.min(rel_err) * 100.0)
+    err_max_pct = float(np.max(rel_err) * 100.0)
+
     # Limits (square + padding)
     xy_min = float(min(np.min(x), np.min(y)))
     xy_max = float(max(np.max(x), np.max(y)))
@@ -62,7 +68,7 @@ def parity_plot(
     lo = xy_min - pad
     hi = xy_max + pad
 
-    fig, ax = plt.subplots(figsize=(6.2, 6.2))
+    fig, ax = plt.subplots()# figsize=(6.2, 6.2))
 
     # Points: inside vs outside band
     ax.scatter(
@@ -95,7 +101,11 @@ def parity_plot(
     ax.set_title(title)
 
     # Quantification text top-left (inside axes)
-    info_txt = f"Außerhalb ±{int(band*100)}%: {n_out} / {n_total} ({frac_out*100:.1f}%)"
+    # --- CHANGED: add error span line below ---
+    info_txt = (
+        f"Außerhalb ±{int(band*100)}%: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
+        f"Fehlerspanne: {err_min_pct:.2f}% bis {err_max_pct:.2f}%"
+    )
     ax.text(
         0.02, 0.98, info_txt,
         transform=ax.transAxes,
@@ -111,7 +121,7 @@ def parity_plot(
 
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.set_aspect("equal", adjustable="box")
+    #ax.set_aspect("equal", adjustable="box")
     ax.grid(True, linewidth=0.6, alpha=0.35)
 
     # Legend bottom-right (only points + ±band)
@@ -154,7 +164,7 @@ def main():
             title="Parity Plot: Massenstrom",
             x_label="ṁ_meas [g/s]",
             y_label="ṁ_calc [g/s]",
-            out_path=out_dir / "parity_m_dot.png",
+            out_path=out_dir / "parity_m_dot_staged.png",
             point_size=args.point_size,
             axis_label_size=args.axis_label_size,
             tick_label_size=args.tick_label_size,
@@ -171,7 +181,7 @@ def main():
             title="Parity Plot: Elektrische Leistung",
             x_label="P_el,meas [W]",
             y_label="P_el,calc [W]",
-            out_path=out_dir / "parity_P_el.png",
+            out_path=out_dir / "parity_P_el_staged.png",
             point_size=args.point_size,
             axis_label_size=args.axis_label_size,
             tick_label_size=args.tick_label_size,
@@ -188,7 +198,7 @@ def main():
             title="Parity Plot: Austrittstemperatur",
             x_label="T_dis,meas [°C]",
             y_label="T_dis,calc [°C]",
-            out_path=out_dir / "parity_T_dis.png",
+            out_path=out_dir / "parity_T_dis_staged.png",
             point_size=args.point_size,
             axis_label_size=args.axis_label_size,
             tick_label_size=args.tick_label_size,
@@ -199,7 +209,7 @@ def main():
     # Write summary
     if summary:
         summary_df = pd.DataFrame(summary)
-        summary_csv = out_dir / "parity_summary.csv"
+        summary_csv = out_dir / "parity_summary_staged.csv"
         summary_df.to_csv(summary_csv, index=False)
         print("Saved:", summary_csv)
 

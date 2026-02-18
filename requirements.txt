@@ -3,4 +3,5 @@ scipy
 pandas
 matplotlib
 CoolProp
+ctREFPROP>=0.10.2
 vclibpy @ git+https://github.com/<USER_OR_ORG>/VCLibPy.git@add_the_lubricant_influence

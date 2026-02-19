@@ -1,18 +1,19 @@
-function fit_molinaroli_matlab(csv_path, oil, model, refrigerant, use_t_dis, w_T_dis, x0_csv, out_dir, maxFunEvals, pythonExe)
+function fit_molinaroli_matlab(csv_path, oil, model, refrigerant, x0_csv, out_dir, maxFunEvals, pythonExe)
 % fit_molinaroli_matlab
 % MATLAB Optimization Toolbox wrapper that minimizes Molinaroli objective g
+% (exactly as in Molinaroli et al. 2017, eq. 31–33)
 % by calling the Python model (cached) via scripts/molinaroli_matlab_bridge.py
 %
 % Example:
-% fit_molinaroli_matlab("data/Datensatz_Fitting_1.csv","LPG68","original","R290",false,1.0,"", "results/matlab_fit", 5000, "C:\...\envs\molinaroli\python.exe")
+% fit_molinaroli_matlab("data/Datensatz_Fitting_1.csv","LPG68","original","R290", ...
+%                       "data/start_params.csv","results/matlab_fit", 5000, ...
+%                       "C:\...\envs\molinaroli\python.exe")
 
 arguments
     csv_path (1,1) string
     oil (1,1) string = "all"
     model (1,1) string = "original"
     refrigerant (1,1) string = "R290"
-    use_t_dis (1,1) logical = false
-    w_T_dis (1,1) double = 1.0
     x0_csv (1,1) string = ""
     out_dir (1,1) string = "results/matlab_fit"
     maxFunEvals (1,1) double = 5000
@@ -35,8 +36,8 @@ end
 bridge = py.importlib.import_module("scripts.molinaroli_matlab_bridge");
 py.importlib.reload(bridge);
 
-% init cache once
-bridge.init(char(csv_path), char(oil), char(model), char(refrigerant), logical(use_t_dis), w_T_dis);
+% init cache once (NOTE: bridge.init signature no longer has T_dis options)
+bridge.init(char(csv_path), char(oil), char(model), char(refrigerant));
 
 % --- 2) x0 (start values)
 paramNames = ["Ua_suc_ref","Ua_dis_ref","Ua_amb","A_tot","A_dis","V_IC","alpha_loss","W_dot_loss_ref"];

@@ -31,7 +31,6 @@ P_SUC_COL = "P1_mean"        # bar
 T_SUC_COL = "T1_mean"        # °C
 P_OUT_COL = "P2_mean"        # bar
 T_AMB_COL = "Tamb_mean"      # °C
-T_DIS_COL = "T2_mean"        # °C measured discharge temperature (optional)
 
 M_FLOW_MEAS_COL = "suction_mf_mean"  # g/s
 P_EL_MEAS_COL = "Pel_mean"           # W
@@ -43,6 +42,9 @@ SPEED_COL = "N"                      # rpm
 F_REF = 50.0
 T_REF = 273.15
 Q_REF = 1.0
+
+# Higher penalty for failed simulations (dimensionless relative error)
+FAIL_E = 1e3
 
 PARAM_NAMES = [
     "Ua_suc_ref",
@@ -84,7 +86,7 @@ def gs_to_kgps(g_s: float) -> float:
     return float(g_s) / 1000.0
 
 def make_compressor(model: str, N_max_hz: float, V_h_m3: float, params: dict):
-    m = model.lower().strip()
+    m = str(model).lower().strip()
     if m in ("orig", "original"):
         return Molinaroli_2017_Compressor(N_max=N_max_hz, V_h=V_h_m3, parameters=params)
     if m in ("mod", "modified"):
@@ -95,40 +97,8 @@ def compute_m_dot_ref(med: CoolProp, V_h_m3: float) -> float:
     st = med.calc_state("TQ", T_REF, Q_REF)
     return float(st.d) * float(V_h_m3) * float(F_REF)
 
-@dataclass
-class Control:
-    n: float
-
-@dataclass
-class SimpleInputs:
-    control: Control
-    T_amb: float
-
-def simulate_point(
-    med: CoolProp, model: str, params_base: dict,
-    N_max_hz: float, V_h_m3: float,
-    p_suc_pa: float, T_suc_K: float, p_out_pa: float,
-    f_oper_hz: float, T_amb_K: float
-):
-    n_rel = f_oper_hz / N_max_hz
-    n_rel = max(1e-6, min(1.0, n_rel))
-
-    params = dict(params_base)
-    params["f_ref"] = F_REF
-    params["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
-
-    comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
-    comp.med_prop = med
-    comp.state_inlet = med.calc_state("PT", p_suc_pa, T_suc_K)
-
-    inputs = SimpleInputs(control=Control(n=n_rel), T_amb=T_amb_K)
-    fs_state = FlowsheetState()
-    comp.calc_state_outlet(p_outlet=p_out_pa, inputs=inputs, fs_state=fs_state)
-
-    T_dis_K = float(comp.state_outlet.T)
-    return float(comp.m_flow), float(comp.P_el), T_dis_K
-
 def read_dataset_csv(path: Path) -> pd.DataFrame:
+    # Your dataset has: first line = units, second line = header
     return pd.read_csv(path, sep=";", header=1, decimal=",")
 
 def _x_to_params(x: np.ndarray) -> dict:
@@ -136,6 +106,46 @@ def _x_to_params(x: np.ndarray) -> dict:
     for name, val in zip(PARAM_NAMES, x):
         p[name] = float(val)
     return p
+
+@dataclass
+class Control:
+    n: float  # relative speed 0..1
+
+@dataclass
+class SimpleInputs:
+    control: Control
+    T_amb: float  # K
+
+def _clamp01(x: float) -> float:
+    return max(1e-9, min(1.0, float(x)))
+
+def _simulate_with_comp(
+    comp,
+    med: CoolProp,
+    inputs: SimpleInputs,
+    p_suc_pa: float,
+    T_suc_K: float,
+    p_out_pa: float,
+    n_rel: float,
+    T_amb_K: float,
+):
+    # Update inputs/state for this operating point
+    inputs.control.n = _clamp01(n_rel)
+    inputs.T_amb = float(T_amb_K)
+
+    comp.state_inlet = med.calc_state("PT", float(p_suc_pa), float(T_suc_K))
+
+    fs_state = FlowsheetState()
+    comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
+
+    m_flow = float(comp.m_flow)
+    P_el = float(comp.P_el)
+
+    # Basic sanity checks
+    if (not np.isfinite(m_flow)) or (not np.isfinite(P_el)) or (m_flow <= 0.0) or (P_el <= 0.0):
+        raise ValueError("Non-finite or non-positive outputs.")
+
+    return m_flow, P_el
 
 # -------------------------
 # Module cache (so MATLAB doesn't reload every call)
@@ -145,8 +155,6 @@ _CACHE = {
     "med": None,
     "model": None,
     "oil": None,
-    "use_t_dis": None,
-    "w_t_dis": None,
     "N_max_hz": None,
     "V_h_m3": None,
     "refrigerant": None,
@@ -157,8 +165,6 @@ def init(
     oil: str = "all",
     model: str = "original",
     refrigerant: str = "R290",
-    use_t_dis: bool = False,
-    w_t_dis: float = 1.0,
     N_max_rpm: float = 7200.0,
     V_h_cm3: float = 30.7,
     max_rows: int | None = None,
@@ -176,10 +182,10 @@ def init(
     if max_rows is not None:
         df = df.head(int(max_rows))
 
-    required = [OIL_COL, P_SUC_COL, T_SUC_COL, P_OUT_COL, T_AMB_COL, M_FLOW_MEAS_COL, P_EL_MEAS_COL, SPEED_COL]
-    if use_t_dis:
-        required.append(T_DIS_COL)
-
+    required = [
+        OIL_COL, P_SUC_COL, T_SUC_COL, P_OUT_COL, T_AMB_COL,
+        M_FLOW_MEAS_COL, P_EL_MEAS_COL, SPEED_COL
+    ]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"CSV missing columns: {missing}")
@@ -201,27 +207,23 @@ def init(
 
         m_meas = gs_to_kgps(r[M_FLOW_MEAS_COL])
         P_meas = float(r[P_EL_MEAS_COL])
-        if m_meas <= 0 or P_meas <= 0:
+
+        if m_meas <= 0 or P_meas <= 0 or not np.isfinite(m_meas) or not np.isfinite(P_meas):
             continue
 
-        row = {
+        n_rel = _clamp01(f_oper_hz / N_max_hz)
+
+        rows.append({
             "oil": r[OIL_COL],
             "p_suc_pa": p_suc_pa,
             "T_suc_K": T_suc_K,
             "p_out_pa": p_out_pa,
             "T_amb_K": T_amb_K,
             "f_oper_hz": f_oper_hz,
+            "n_rel": n_rel,
             "m_meas": m_meas,
             "P_meas": P_meas,
-        }
-
-        if use_t_dis:
-            T_dis_meas_K = c_to_k(r[T_DIS_COL])
-            if T_dis_meas_K <= 0:
-                continue
-            row["T_dis_meas_K"] = T_dis_meas_K
-
-        rows.append(row)
+        })
 
     if len(rows) == 0:
         raise ValueError("No valid rows after unit conversion/filtering.")
@@ -233,8 +235,6 @@ def init(
         "med": med,
         "model": str(model),
         "oil": str(oil),
-        "use_t_dis": bool(use_t_dis),
-        "w_t_dis": float(w_t_dis),
         "N_max_hz": float(N_max_hz),
         "V_h_m3": float(V_h_m3),
         "refrigerant": str(refrigerant),
@@ -253,48 +253,46 @@ def cost(x_in) -> float:
     model = _CACHE["model"]
     N_max_hz = _CACHE["N_max_hz"]
     V_h_m3 = _CACHE["V_h_m3"]
-    use_t_dis = _CACHE["use_t_dis"]
-    w_t_dis = _CACHE["w_t_dis"]
 
     params = _x_to_params(x)
+    params["f_ref"] = F_REF
+    params["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
 
-    e_m = []
-    e_p = []
-    e_t = []
+    # Create compressor ONCE per cost evaluation (not per point)
+    comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
+    comp.med_prop = med
 
-    for row in rows:
+    # Reusable inputs container (mutated per point)
+    inputs = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
+
+    e_m = np.empty(len(rows), dtype=float)
+    e_W = np.empty(len(rows), dtype=float)
+
+    for i, row in enumerate(rows):
         try:
-            m_calc, P_calc, T_dis_calc = simulate_point(
-                med=med, model=model, params_base=params,
-                N_max_hz=N_max_hz, V_h_m3=V_h_m3,
-                p_suc_pa=row["p_suc_pa"], T_suc_K=row["T_suc_K"], p_out_pa=row["p_out_pa"],
-                f_oper_hz=row["f_oper_hz"], T_amb_K=row["T_amb_K"],
+            m_calc, P_calc = _simulate_with_comp(
+                comp=comp,
+                med=med,
+                inputs=inputs,
+                p_suc_pa=row["p_suc_pa"],
+                T_suc_K=row["T_suc_K"],
+                p_out_pa=row["p_out_pa"],
+                n_rel=row["n_rel"],
+                T_amb_K=row["T_amb_K"],
             )
 
-            e_m.append((m_calc / row["m_meas"]) - 1.0)
-            e_p.append((P_calc / row["P_meas"]) - 1.0)
-
-            if use_t_dis:
-                e_t.append((T_dis_calc / row["T_dis_meas_K"]) - 1.0)
+            e_m[i] = (m_calc / row["m_meas"]) - 1.0
+            e_W[i] = (P_calc / row["P_meas"]) - 1.0
 
         except Exception:
-            e_m.append(10.0)
-            e_p.append(10.0)
-            if use_t_dis:
-                e_t.append(10.0)
+            e_m[i] = FAIL_E
+            e_W[i] = FAIL_E
 
-    e_m = np.asarray(e_m, dtype=float)
-    e_p = np.asarray(e_p, dtype=float)
-
-    # Molinaroli objective (eq. 31–33): RMS(m) + RMS(W)
-    g = float(np.sqrt(np.mean(e_m**2)) + np.sqrt(np.mean(e_p**2)))
-
-    # Optional: add T_dis penalty (not in Molinaroli eq 31–33, but helpful if you want)
-    if use_t_dis and len(e_t) > 0:
-        e_t = np.asarray(e_t, dtype=float)
-        g += float(w_t_dis) * float(np.sqrt(np.mean(e_t**2)))
-
-    return g
+    # Molinaroli objective (eq. 31–33):
+    # g = (1/(2n)) * sum(e_m^2) + (1/(2n)) * sum(e_W^2)
+    #     = 0.5 * (mean(e_m^2) + mean(e_W^2))
+    g = 0.5 * (float(np.mean(e_m**2)) + float(np.mean(e_W**2)))
+    return float(g)
 
 def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matlab"):
     x = np.asarray(list(x_in), dtype=float).reshape(-1)
@@ -307,8 +305,14 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
     N_max_hz = _CACHE["N_max_hz"]
     V_h_m3 = _CACHE["V_h_m3"]
     refrigerant = _CACHE["refrigerant"]
-    use_t_dis = _CACHE["use_t_dis"]
-    w_t_dis = _CACHE["w_t_dis"]
+
+    params["f_ref"] = F_REF
+    params["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
+
+    # Create compressor ONCE for prediction export
+    comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
+    comp.med_prop = med
+    inputs = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
 
     # fitted params row (+ metadata)
     run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -321,10 +325,9 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
         "refrigerant": refrigerant,
         "model": model,
         "fit_mode": f"{tag}_{run_id}",
-        "use_t_dis": bool(use_t_dis),
-        "w_T_dis": float(w_t_dis),
         "cost_g": float(cost(x)),
         "n_points": int(len(rows)),
+        "fail_penalty_e": float(FAIL_E),
     })
 
     out_params_csv = str(out_params_csv)
@@ -337,14 +340,28 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
     # predictions
     pred = []
     for row in rows:
-        m_calc, P_calc, T_dis_calc = simulate_point(
-            med=med, model=model, params_base=params,
-            N_max_hz=N_max_hz, V_h_m3=V_h_m3,
-            p_suc_pa=row["p_suc_pa"], T_suc_K=row["T_suc_K"], p_out_pa=row["p_out_pa"],
-            f_oper_hz=row["f_oper_hz"], T_amb_K=row["T_amb_K"],
-        )
+        ok = True
+        try:
+            m_calc, P_calc = _simulate_with_comp(
+                comp=comp,
+                med=med,
+                inputs=inputs,
+                p_suc_pa=row["p_suc_pa"],
+                T_suc_K=row["T_suc_K"],
+                p_out_pa=row["p_out_pa"],
+                n_rel=row["n_rel"],
+                T_amb_K=row["T_amb_K"],
+            )
+            e_m_rel = (m_calc / row["m_meas"]) - 1.0
+            e_P_rel = (P_calc / row["P_meas"]) - 1.0
+        except Exception:
+            ok = False
+            m_calc = float("nan")
+            P_calc = float("nan")
+            e_m_rel = float("nan")
+            e_P_rel = float("nan")
 
-        out = {
+        pred.append({
             "oil": row["oil"],
             "f_oper_hz": row["f_oper_hz"],
             "p_suc_bar": row["p_suc_pa"] / 1e5,
@@ -352,18 +369,13 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
             "p_out_bar": row["p_out_pa"] / 1e5,
             "T_amb_C": row["T_amb_K"] - 273.15,
             "m_meas_gps": row["m_meas"] * 1000.0,
-            "m_calc_gps": m_calc * 1000.0,
-            "e_m_rel": (m_calc / row["m_meas"]) - 1.0,
+            "m_calc_gps": (m_calc * 1000.0) if np.isfinite(m_calc) else float("nan"),
+            "e_m_rel": e_m_rel,
             "P_meas_W": row["P_meas"],
             "P_calc_W": P_calc,
-            "e_P_rel": (P_calc / row["P_meas"]) - 1.0,
-        }
-        if use_t_dis:
-            out["T_dis_meas_C"] = row["T_dis_meas_K"] - 273.15
-            out["T_dis_calc_C"] = T_dis_calc - 273.15
-            out["e_T_dis_rel"] = (T_dis_calc / row["T_dis_meas_K"]) - 1.0
-
-        pred.append(out)
+            "e_P_rel": e_P_rel,
+            "ok": ok,
+        })
 
     pd.DataFrame(pred).to_csv(out_pred_csv, index=False)
     return True

@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import least_squares
 
-from vclibpy.media.cool_prop import CoolProp
+from vclibpy.media.ref_prop import RefProp
 from vclibpy.datamodels import FlowsheetState
 from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor,
@@ -132,14 +132,14 @@ def make_compressor(model: str, N_max_hz: float, V_h_m3: float, params: dict):
 # =========================
 # calculation of m_dot_ref
 # =========================
-def compute_m_dot_ref(med: CoolProp, V_h_m3: float) -> float:
+def compute_m_dot_ref(med: RefProp, V_h_m3: float) -> float:
     st = med.calc_state("TQ", T_REF, Q_REF)
     rho_ref = st.d
     return rho_ref * V_h_m3 * F_REF
 
 
 def simulate_point(
-    med: CoolProp, model: str, params_base: dict,
+    med: RefProp, model: str, params_base: dict,
     N_max_hz: float, V_h_m3: float,
     p_suc_pa: float, T_suc_K: float, p_out_pa: float,
     f_oper_hz: float, T_amb_K: float
@@ -168,7 +168,7 @@ def simulate_point(
 # Default: m_flow + P_el
 # Optional: + T_dis (if use_t_dis=True)
 def residuals_for_dataset(
-    x: np.ndarray, rows: list[dict], med: CoolProp,
+    x: np.ndarray, rows: list[dict], med: RefProp,
     model: str, N_max_hz: float, V_h_m3: float,
     use_t_dis: bool
 ) -> np.ndarray:
@@ -330,7 +330,7 @@ def main():
     if len(rows) == 0:
         raise ValueError("No valid rows after unit conversion/filtering.")
 
-    med = CoolProp(fluid_name=args.refrigerant)
+    med = RefProp(fluid_name=args.refrigerant)
 
     # Default start values
     x0 = np.array([DEFAULT_PARAMS[n] for n in PARAM_NAMES], dtype=float)

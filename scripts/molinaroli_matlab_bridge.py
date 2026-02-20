@@ -3,9 +3,9 @@
 # Bridge for MATLAB Optimization Toolbox:
 # - MATLAB calls init(...) once (loads dataset + caches)
 # - MATLAB calls cost(x) many times (scalar objective like Molinaroli eq. 31–33)
-# - MATLAB calls save_results(x, out_params_csv, out_pred_csv) once at the end
+# - MATLAB calls save_results(...) once at the end
 #
-# Uses CoolProp backend via vclibpy.media.cool_prop.CoolProp.
+# Uses RefProp backend
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from vclibpy.media.cool_prop import CoolProp
+from vclibpy.media import RefProp
 from vclibpy.datamodels import FlowsheetState
 from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor,
@@ -93,7 +93,7 @@ def make_compressor(model: str, N_max_hz: float, V_h_m3: float, params: dict):
         return Molinaroli_2017_Compressor_Modified(N_max=N_max_hz, V_h=V_h_m3, parameters=params)
     raise ValueError("Unknown model. Use original | modified")
 
-def compute_m_dot_ref(med: CoolProp, V_h_m3: float) -> float:
+def compute_m_dot_ref(med, V_h_m3: float) -> float:
     st = med.calc_state("TQ", T_REF, Q_REF)
     return float(st.d) * float(V_h_m3) * float(F_REF)
 
@@ -121,7 +121,7 @@ def _clamp01(x: float) -> float:
 
 def _simulate_with_comp(
     comp,
-    med: CoolProp,
+    med,
     inputs: SimpleInputs,
     p_suc_pa: float,
     T_suc_K: float,
@@ -164,7 +164,7 @@ def init(
     csv_path: str,
     oil: str = "all",
     model: str = "original",
-    refrigerant: str = "R290",
+    refrigerant: str = "PROPANE",
     N_max_rpm: float = 7200.0,
     V_h_cm3: float = 30.7,
     max_rows: int | None = None,
@@ -208,27 +208,32 @@ def init(
         m_meas = gs_to_kgps(r[M_FLOW_MEAS_COL])
         P_meas = float(r[P_EL_MEAS_COL])
 
-        if m_meas <= 0 or P_meas <= 0 or not np.isfinite(m_meas) or not np.isfinite(P_meas):
+        if (m_meas <= 0) or (P_meas <= 0) or (not np.isfinite(m_meas)) or (not np.isfinite(P_meas)):
             continue
 
         n_rel = _clamp01(f_oper_hz / N_max_hz)
 
         rows.append({
             "oil": r[OIL_COL],
-            "p_suc_pa": p_suc_pa,
-            "T_suc_K": T_suc_K,
-            "p_out_pa": p_out_pa,
-            "T_amb_K": T_amb_K,
-            "f_oper_hz": f_oper_hz,
-            "n_rel": n_rel,
-            "m_meas": m_meas,
-            "P_meas": P_meas,
+            "p_suc_pa": float(p_suc_pa),
+            "T_suc_K": float(T_suc_K),
+            "p_out_pa": float(p_out_pa),
+            "T_amb_K": float(T_amb_K),
+            "f_oper_hz": float(f_oper_hz),
+            "n_rel": float(n_rel),
+            "m_meas": float(m_meas),
+            "P_meas": float(P_meas),
         })
 
     if len(rows) == 0:
         raise ValueError("No valid rows after unit conversion/filtering.")
 
-    med = CoolProp(fluid_name=refrigerant)
+    # RefProp backend
+    try:
+        med = RefProp(fluid_name=refrigerant)
+    except TypeError:
+        # fallback if wrapper uses different argument name
+        med = RefProp(refrigerant)
 
     _CACHE.update({
         "rows": rows,
@@ -243,7 +248,6 @@ def init(
     return True
 
 def cost(x_in) -> float:
-    # Accept MATLAB py.list or numpy-ish
     x = np.asarray(list(x_in), dtype=float).reshape(-1)
     if x.size != len(PARAM_NAMES):
         raise ValueError(f"x must have length {len(PARAM_NAMES)}")
@@ -258,11 +262,9 @@ def cost(x_in) -> float:
     params["f_ref"] = F_REF
     params["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
 
-    # Create compressor ONCE per cost evaluation (not per point)
     comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
     comp.med_prop = med
 
-    # Reusable inputs container (mutated per point)
     inputs = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
 
     e_m = np.empty(len(rows), dtype=float)
@@ -280,23 +282,35 @@ def cost(x_in) -> float:
                 n_rel=row["n_rel"],
                 T_amb_K=row["T_amb_K"],
             )
-
             e_m[i] = (m_calc / row["m_meas"]) - 1.0
             e_W[i] = (P_calc / row["P_meas"]) - 1.0
-
         except Exception:
             e_m[i] = FAIL_E
             e_W[i] = FAIL_E
 
     # Molinaroli objective (eq. 31–33):
-    # g = (1/(2n)) * sum(e_m^2) + (1/(2n)) * sum(e_W^2)
-    #     = 0.5 * (mean(e_m^2) + mean(e_W^2))
     g = 0.5 * (float(np.mean(e_m**2)) + float(np.mean(e_W**2)))
     return float(g)
 
-def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matlab"):
+def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matlab", x0_in=None):
+    """
+    Save fitted parameter row and predictions.
+    If x0_in is provided, also store start parameters as x0_<name> columns.
+    """
     x = np.asarray(list(x_in), dtype=float).reshape(-1)
+    if x.size != len(PARAM_NAMES):
+        raise ValueError(f"x must have length {len(PARAM_NAMES)}")
     params = _x_to_params(x)
+
+    # optional start parameters
+    x0 = None
+    if x0_in is not None:
+        try:
+            x0_tmp = np.asarray(list(x0_in), dtype=float).reshape(-1)
+            if x0_tmp.size == len(PARAM_NAMES):
+                x0 = x0_tmp
+        except Exception:
+            x0 = None
 
     rows = _CACHE["rows"]
     med = _CACHE["med"]
@@ -309,36 +323,20 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
     params["f_ref"] = F_REF
     params["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
 
-    # Create compressor ONCE for prediction export
-    comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
-    comp.med_prop = med
-    inputs = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
-
-    # fitted params row (+ metadata)
-    run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    fitted_row = {k: float(params[k]) for k in PARAM_NAMES}
-    fitted_row.update({
-        "f_ref": F_REF,
-        "T_ref": T_REF,
-        "m_dot_ref_definition": "rho_sat_vapor(T=273.15K,Q=1)*V_h*f_ref",
-        "oil_fit_mode": oil,
-        "refrigerant": refrigerant,
-        "model": model,
-        "fit_mode": f"{tag}_{run_id}",
-        "cost_g": float(cost(x)),
-        "n_points": int(len(rows)),
-        "fail_penalty_e": float(FAIL_E),
-    })
-
     out_params_csv = str(out_params_csv)
     out_pred_csv = str(out_pred_csv)
     Path(out_params_csv).parent.mkdir(parents=True, exist_ok=True)
     Path(out_pred_csv).parent.mkdir(parents=True, exist_ok=True)
 
-    pd.DataFrame([fitted_row]).to_csv(out_params_csv, index=False)
+    comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
+    comp.med_prop = med
+    inputs = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
 
-    # predictions
     pred = []
+    e_m_list = []
+    e_W_list = []
+    n_fail = 0
+
     for row in rows:
         ok = True
         try:
@@ -352,14 +350,21 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
                 n_rel=row["n_rel"],
                 T_amb_K=row["T_amb_K"],
             )
-            e_m_rel = (m_calc / row["m_meas"]) - 1.0
-            e_P_rel = (P_calc / row["P_meas"]) - 1.0
+            e_m = (m_calc / row["m_meas"]) - 1.0
+            e_W = (P_calc / row["P_meas"]) - 1.0
+            e_m_list.append(float(e_m))
+            e_W_list.append(float(e_W))
+
         except Exception:
             ok = False
+            n_fail += 1
             m_calc = float("nan")
             P_calc = float("nan")
-            e_m_rel = float("nan")
-            e_P_rel = float("nan")
+            e_m = float("nan")
+            e_W = float("nan")
+            # for objective calculation, mimic cost(): use FAIL_E
+            e_m_list.append(float(FAIL_E))
+            e_W_list.append(float(FAIL_E))
 
         pred.append({
             "oil": row["oil"],
@@ -370,12 +375,38 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
             "T_amb_C": row["T_amb_K"] - 273.15,
             "m_meas_gps": row["m_meas"] * 1000.0,
             "m_calc_gps": (m_calc * 1000.0) if np.isfinite(m_calc) else float("nan"),
-            "e_m_rel": e_m_rel,
+            "e_m_rel": e_m,
             "P_meas_W": row["P_meas"],
             "P_calc_W": P_calc,
-            "e_P_rel": e_P_rel,
+            "e_P_rel": e_W,
             "ok": ok,
         })
 
+    e_m_arr = np.asarray(e_m_list, dtype=float)
+    e_W_arr = np.asarray(e_W_list, dtype=float)
+    cost_g = 0.5 * (float(np.mean(e_m_arr**2)) + float(np.mean(e_W_arr**2)))
+
+    run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    fitted_row = {k: float(params[k]) for k in PARAM_NAMES}
+
+    if x0 is not None:
+        for name, val in zip(PARAM_NAMES, x0):
+            fitted_row[f"x0_{name}"] = float(val)
+
+    fitted_row.update({
+        "f_ref": F_REF,
+        "T_ref": T_REF,
+        "m_dot_ref_definition": "rho_sat_vapor(T=273.15K,Q=1)*V_h*f_ref",
+        "oil_fit_mode": oil,
+        "refrigerant": refrigerant,
+        "model": model,
+        "fit_mode": f"{tag}_{run_id}",
+        "cost_g": float(cost_g),
+        "n_points": int(len(rows)),
+        "n_fail": int(n_fail),
+        "fail_penalty_e": float(FAIL_E),
+    })
+
+    pd.DataFrame([fitted_row]).to_csv(out_params_csv, index=False)
     pd.DataFrame(pred).to_csv(out_pred_csv, index=False)
     return True

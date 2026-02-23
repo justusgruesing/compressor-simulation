@@ -7,13 +7,15 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from vclibpy.media.cool_prop import CoolProp
+from vclibpy.media import RefProp
 from vclibpy.datamodels import FlowsheetState
 from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor,
     Molinaroli_2017_Compressor_Modified,
 )
-
+#
+# Beispielaufruf: python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --params_csv results/matlab_fit/fitted_params_lpg68_original_....csv
+#
 # =========================
 # Defaults for YOUR CSV
 # =========================
@@ -55,7 +57,7 @@ DEFAULT_PARAMS = {
     "Ua_dis_ref": 13.96,
     "Ua_amb": 0.36,
     "A_tot": 9.47e-9,
-    "A_dis": 86.1e-9,
+    "A_dis": 86.1e-6,   # important: e-6 (matches your fitting scripts)
     "V_IC": 16.11e-6,
     "alpha_loss": 0.16,
     "W_dot_loss_ref": 83.0,
@@ -81,8 +83,14 @@ class SimpleInputs:
 def bar_to_pa(p_bar: float) -> float:
     return float(p_bar) * 100_000.0
 
+def pa_to_bar(p_pa: float) -> float:
+    return float(p_pa) / 100_000.0
+
 def c_to_k(t_c: float) -> float:
     return float(t_c) + 273.15
+
+def k_to_c(t_k: float) -> float:
+    return float(t_k) - 273.15
 
 def rpm_to_hz(rpm: float) -> float:
     return float(rpm) / 60.0
@@ -94,14 +102,9 @@ def gs_to_kgps(g_s: float) -> float:
 # CSV I/O
 # =========================
 def read_dataset_csv(path: Path, sep: str, header: int, decimal: str) -> pd.DataFrame:
-    # first row units, second row header -> header=1 by default
     return pd.read_csv(path, sep=sep, header=header, decimal=decimal)
 
 def load_params_csv(path: Path) -> dict:
-    """
-    Read ONE-ROW params CSV and return parameters dict.
-    Accepts extra metadata columns; only uses PARAM_NAMES + optional f_ref.
-    """
     df = pd.read_csv(path)
     if len(df) != 1:
         raise ValueError("Params CSV must contain exactly one row.")
@@ -128,34 +131,60 @@ def pick_model(model_name: str, N_max_hz: float, V_h_m3: float, parameters: dict
         return Molinaroli_2017_Compressor_Modified(N_max=N_max_hz, V_h=V_h_m3, parameters=parameters)
     raise ValueError("Unknown --model. Use: original | modified")
 
-def compute_m_dot_ref(med: CoolProp, V_h_m3: float) -> float:
+def compute_m_dot_ref(med: RefProp, V_h_m3: float) -> float:
     st = med.calc_state("TQ", T_REF, Q_REF)
-    return st.d * V_h_m3 * F_REF
+    return float(st.d) * float(V_h_m3) * float(F_REF)
 
 def norm_oil(s: str) -> str:
     return str(s).strip().lower()
 
+def _finite(x):
+    try:
+        x = float(x)
+        return x if np.isfinite(x) else float("nan")
+    except Exception:
+        return float("nan")
+
+def _add_compact_state(rec: dict, prefix: str, st) -> None:
+    """
+    Only p and T (plus density for internal m_dot_3 calculation / debugging).
+    """
+    if st is None:
+        rec[f"{prefix}_p_Pa"] = float("nan")
+        rec[f"{prefix}_p_bar"] = float("nan")
+        rec[f"{prefix}_T_K"] = float("nan")
+        rec[f"{prefix}_T_C"] = float("nan")
+        rec[f"{prefix}_rho_kgpm3"] = float("nan")
+        return
+
+    p = _finite(getattr(st, "p", np.nan))
+    T = _finite(getattr(st, "T", np.nan))
+    rho = _finite(getattr(st, "d", np.nan))
+
+    rec[f"{prefix}_p_Pa"] = p
+    rec[f"{prefix}_p_bar"] = pa_to_bar(p) if np.isfinite(p) else float("nan")
+    rec[f"{prefix}_T_K"] = T
+    rec[f"{prefix}_T_C"] = k_to_c(T) if np.isfinite(T) else float("nan")
+    rec[f"{prefix}_rho_kgpm3"] = rho
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Batch simulation for Molinaroli compressor model (original/modified) reading multiple points from CSV."
+        description="Compact batch simulation for Molinaroli compressor model (RefProp backend)."
     )
 
     ap.add_argument("--csv", required=True, help="Input CSV path (units row + header row).")
     ap.add_argument("--out", default=None, help="Output CSV path (default: results/batch_<timestamp>.csv)")
 
     ap.add_argument("--model", default="original", help="original | modified")
-    ap.add_argument("--refrigerant", default="R290", help="CoolProp fluid name, e.g. R290")
+    ap.add_argument("--refrigerant", default="PROPANE", help="RefProp fluid name (e.g. PROPANE)")
 
-    # Datasheet constants
     ap.add_argument("--N_max_rpm", type=float, default=7200.0, help="Max speed [rpm] from datasheet")
     ap.add_argument("--V_h_cm3", type=float, default=30.7, help="Displacement volume [cm^3] from datasheet")
 
-    # CSV parsing
     ap.add_argument("--sep", default=";", help="CSV separator (default: ';')")
     ap.add_argument("--decimal", default=",", help="Decimal separator (default: ',')")
     ap.add_argument("--header", type=int, default=1, help="Header row index (default: 1 because line 0 is units)")
 
-    # Column mapping (defaults match your dataset)
     ap.add_argument("--oil_col", default=OIL_COL_DEFAULT, help="Oil column name (default: Ölbezeichnung)")
     ap.add_argument("--oil", default="all", help="LPG100 | LPG68 | all")
 
@@ -169,9 +198,7 @@ def main():
     ap.add_argument("--col_P_meas", default=P_EL_MEAS_COL_DEFAULT, help="Optional: measured Pel column (W)")
 
     ap.add_argument("--max_rows", type=int, default=None, help="Optional: limit number of rows for testing")
-
-    # NEW: parameter CSV
-    ap.add_argument("--params_csv", default=None, help="Optional: ONE-ROW params CSV to use for simulation (fitted/start params)")
+    ap.add_argument("--params_csv", default=None, help="Optional: ONE-ROW params CSV (fitted/start params)")
 
     args = ap.parse_args()
 
@@ -179,13 +206,14 @@ def main():
     if not csv_path.exists():
         raise FileNotFoundError(csv_path)
 
-    out_path = Path(args.out) if args.out else None
-    if out_path is None:
+    # Output path
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
         Path("results").mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = Path("results") / f"batch_{args.oil.lower()}_{args.model.lower()}_{ts}.csv"
-    else:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Read dataset CSV
     df = read_dataset_csv(csv_path, sep=args.sep, header=args.header, decimal=args.decimal)
@@ -200,42 +228,36 @@ def main():
     if args.max_rows is not None:
         df = df.head(args.max_rows)
 
-    # Required input columns
     required = [args.col_p_suc, args.col_T_suc, args.col_p_out, args.col_T_amb, args.col_speed]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"CSV missing required columns: {missing}")
 
-    # Drop NaNs in required inputs
     df = df.dropna(subset=required).reset_index(drop=True)
     if len(df) == 0:
         raise ValueError("No valid rows after dropping NaNs in required columns (and oil filter).")
 
     # Datasheet conversions
     N_max_hz = rpm_to_hz(args.N_max_rpm)
-    V_h_m3 = float(args.V_h_cm3) * 1e-6  # cm^3 -> m^3
+    V_h_m3 = float(args.V_h_cm3) * 1e-6
 
-    # Media
-    med = CoolProp(fluid_name=args.refrigerant)
+    # Media (RefProp)
+    med = RefProp(fluid_name=args.refrigerant)
 
-    # Parameters: either from CSV or defaults
+    # Parameters
     if args.params_csv:
         params_base = load_params_csv(Path(args.params_csv))
     else:
         params_base = DEFAULT_PARAMS.copy()
 
-    # Ensure fixed f_ref and computed m_dot_ref definition
     params_base["f_ref"] = F_REF
     params_base["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
 
     # Build compressor ONCE
     comp = pick_model(args.model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, parameters=params_base)
     comp.med_prop = med
-
-    # Enable debug tracking inside the compressor model
     comp.debug_enabled = True
 
-    # Measurement columns present?
     has_m_meas = args.col_m_meas in df.columns
     has_P_meas = args.col_P_meas in df.columns
 
@@ -248,49 +270,88 @@ def main():
         T_amb_K = c_to_k(row[args.col_T_amb])
         f_oper_hz = rpm_to_hz(row[args.col_speed])
 
-        # relative speed for VCLibPy
-        n_rel = f_oper_hz / N_max_hz
-        n_rel = float(max(1e-6, min(1.0, n_rel)))
+        n_rel = float(max(1e-6, min(1.0, f_oper_hz / N_max_hz)))
+
+        try:
+            n_abs = float(comp.get_n_absolute(n_rel))
+        except Exception:
+            n_abs = float("nan")
 
         rec = {
             "row_index": int(i),
-            "model": args.model,
-            "refrigerant": args.refrigerant,
-            "p_suc_bar": float(row[args.col_p_suc]),
-            "T_suc_C": float(row[args.col_T_suc]),
-            "p_out_bar": float(row[args.col_p_out]),
-            "T_amb_C": float(row[args.col_T_amb]),
-            "N_rpm": float(row[args.col_speed]),
-            "n_rel": n_rel,
             "success": True,
             "error": "",
+            "model": args.model,
+            "backend": "RefProp",
+            "refrigerant": args.refrigerant,
+            "oil": str(row[args.oil_col]) if args.oil_col in df.columns else "",
+            # Inputs
+            "p_suc_bar_in": float(row[args.col_p_suc]),
+            "T_suc_C_in": float(row[args.col_T_suc]),
+            "p_out_bar_in": float(row[args.col_p_out]),
+            "T_amb_C_in": float(row[args.col_T_amb]),
+            "N_rpm_in": float(row[args.col_speed]),
+            "f_oper_hz": float(f_oper_hz),
+            "n_rel": float(n_rel),
+            "n_abs_hz": float(n_abs),
         }
 
-        if args.oil_col in df.columns:
-            rec["oil"] = str(row[args.oil_col])
+        fs_state = FlowsheetState()
 
         try:
-            # Optional: reset debug stats explicitly per point
-            comp._gamma4_min = None
-            comp._gamma4_max = None
-            comp._gamma4_n = 0
+            comp.state_inlet = med.calc_state("PT", float(p_suc_pa), float(T_suc_K))
+            inputs = SimpleInputs(control=Control(n=n_rel), T_amb=float(T_amb_K))
+            comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
 
-            comp.state_inlet = med.calc_state("PT", p_suc_pa, T_suc_K)
+            # Compact thermodynamic states (p,T,rho)
+            _add_compact_state(rec, "st_in", getattr(comp, "state_inlet", None))
+            _add_compact_state(rec, "c1", getattr(comp, "state_c_1", None))
+            _add_compact_state(rec, "c3", getattr(comp, "state_c_3", None))
+            _add_compact_state(rec, "c4", getattr(comp, "state_c_4", None))
+            _add_compact_state(rec, "c5", getattr(comp, "state_c_5", None))
+            _add_compact_state(rec, "st_out", getattr(comp, "state_outlet", None))
 
-            inputs = SimpleInputs(control=Control(n=n_rel), T_amb=T_amb_K)
-            fs_state = FlowsheetState()
-            comp.calc_state_outlet(p_outlet=p_out_pa, inputs=inputs, fs_state=fs_state)
-
-            # Print debug report for this operating point
-            print(f"\n--- Debug row {i} ---")
-            print(comp.get_debug_report())
-
+            # Outputs
             rec["m_flow_kg_s"] = float(comp.m_flow)
             rec["m_flow_g_s"] = float(comp.m_flow) * 1000.0
             rec["P_el_W"] = float(comp.P_el)
-            rec["T_dis_K"] = float(comp.state_outlet.T)
-            rec["T_dis_C"] = float(comp.state_outlet.T) - 273.15
 
+            # Wall temperature
+            rec["T_wall_K"] = _finite(getattr(comp, "T_w", np.nan))
+            rec["T_wall_C"] = k_to_c(rec["T_wall_K"]) if np.isfinite(rec["T_wall_K"]) else float("nan")
+
+            # Discharge temperature shortcut
+            rec["T_dis_K"] = _finite(getattr(comp.state_outlet, "T", np.nan))
+            rec["T_dis_C"] = k_to_c(rec["T_dis_K"]) if np.isfinite(rec["T_dis_K"]) else float("nan")
+
+            # Internal mass flow & Wdot split (reconstructed from states, like in your model)
+            try:
+                rho3 = float(getattr(comp, "state_c_3").d)
+                h3 = float(getattr(comp, "state_c_3").h)
+                h4 = float(getattr(comp, "state_c_4").h)
+
+                V_IC = float(params_base["V_IC"])
+                m_dot_3 = rho3 * V_IC * float(n_abs)
+
+                W_dot_int = m_dot_3 * (h4 - h3)
+
+                alpha_loss = float(params_base["alpha_loss"])
+                W_dot_loss_ref = float(params_base["W_dot_loss_ref"])
+                W_dot_loss = (W_dot_int * alpha_loss + W_dot_loss_ref * (float(n_abs) / float(F_REF)) ** 2)
+
+                rec["m_dot_3_kg_s"] = float(m_dot_3)
+                rec["W_dot_int_W"] = float(W_dot_int)
+                rec["W_dot_loss_W"] = float(W_dot_loss)
+                rec["W_dot_int_plus_loss_W"] = float(W_dot_int + W_dot_loss)
+                rec["W_dot_loss_share"] = float(W_dot_loss / (W_dot_int + W_dot_loss)) if (W_dot_int + W_dot_loss) > 0 else float("nan")
+            except Exception:
+                rec["m_dot_3_kg_s"] = float("nan")
+                rec["W_dot_int_W"] = float("nan")
+                rec["W_dot_loss_W"] = float("nan")
+                rec["W_dot_int_plus_loss_W"] = float("nan")
+                rec["W_dot_loss_share"] = float("nan")
+
+            # Measurements + residuals (optional)
             if has_m_meas and pd.notna(row[args.col_m_meas]):
                 rec["m_meas_g_s"] = float(row[args.col_m_meas])
                 m_meas = gs_to_kgps(row[args.col_m_meas])
@@ -304,11 +365,25 @@ def main():
         except Exception as e:
             rec["success"] = False
             rec["error"] = str(e)
+
+            # Fill compact outputs with NaNs
+            for prefix in ["st_in", "c1", "c3", "c4", "c5", "st_out"]:
+                _add_compact_state(rec, prefix, None)
+
             rec["m_flow_kg_s"] = np.nan
             rec["m_flow_g_s"] = np.nan
             rec["P_el_W"] = np.nan
+            rec["T_wall_K"] = np.nan
+            rec["T_wall_C"] = np.nan
             rec["T_dis_K"] = np.nan
             rec["T_dis_C"] = np.nan
+
+            rec["m_dot_3_kg_s"] = np.nan
+            rec["W_dot_int_W"] = np.nan
+            rec["W_dot_loss_W"] = np.nan
+            rec["W_dot_int_plus_loss_W"] = np.nan
+            rec["W_dot_loss_share"] = np.nan
+
             if has_m_meas:
                 rec["m_meas_g_s"] = float(row[args.col_m_meas]) if pd.notna(row[args.col_m_meas]) else np.nan
                 rec["e_m_rel"] = np.nan
@@ -325,7 +400,7 @@ def main():
     n_total = len(out_df)
 
     print("\n=== Batch done ===")
-    print(f"oil: {args.oil}, model: {args.model}, refrigerant: {args.refrigerant}")
+    print(f"oil: {args.oil}, model: {args.model}, refrigerant: {args.refrigerant}, backend: RefProp")
     print(f"points: {n_ok}/{n_total} successful")
     print(f"params source: {args.params_csv if args.params_csv else 'DEFAULT_PARAMS'}")
     print(f"saved: {out_path}")

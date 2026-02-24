@@ -42,6 +42,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import tempfile
+import shutil
+import atexit
+import uuid
+
 import numpy as np
 import pandas as pd
 
@@ -218,12 +223,39 @@ _WORK: dict = {}
 
 def _init_worker(refrigerant, model, N_max_hz, V_h_m3,
                  m_dot_ref, rows_train, use_Tdis, Tdis_norm_K):
-    """Runs ONCE per worker process. Creates a private RefProp instance."""
+    """
+    Runs ONCE per worker process.
+    Creates a private RefProp instance AND a private working directory
+    to avoid DLL copy collisions on Windows.
+    """
     global _WORK
+
+    # --- NEW: isolate each worker into its own temp directory ---
+    # This prevents multiple processes from copying/loading the same
+    # med_prop_<fluid>_REFPRP64.dll in the project folder.
+    pid = os.getpid()
+    unique = uuid.uuid4().hex[:8]
+    worker_dir = Path(tempfile.gettempdir()) / f"refprop_worker_{pid}_{unique}"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+
+    # switch CWD so any "copy DLL to cwd" logic becomes per-worker
+    os.chdir(worker_dir)
+
+    # optional cleanup at process exit (safe even if folder stays)
+    def _cleanup():
+        try:
+            shutil.rmtree(worker_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+
+    # --- create RefProp instance inside the worker (after chdir) ---
     try:
         med = RefProp(fluid_name=refrigerant)
     except TypeError:
         med = RefProp(refrigerant)
+
     _WORK = {
         "med":          med,
         "model":        str(model),
@@ -233,6 +265,7 @@ def _init_worker(refrigerant, model, N_max_hz, V_h_m3,
         "rows_train":   rows_train,
         "use_Tdis":     bool(use_Tdis),
         "Tdis_norm_K":  float(Tdis_norm_K),
+        "worker_dir":   str(worker_dir),  # debug/trace
     }
 
 def _objective_error_worker(x_in) -> float:

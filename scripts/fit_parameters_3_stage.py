@@ -30,7 +30,7 @@ Referenzwerte (werden aus den Daten/Parametern berechnet, nicht gefittet):
 Aufruf:
   python scripts/fit_parameters.py --csv data/Datensatz_Fitting_1.csv --oil LPG100
   python scripts/fit_parameters.py --csv data/Datensatz_Fitting_1.csv --oil all --model original
-  python scripts/fit_parameters.py --csv data/Datensatz_Fitting_1.csv --oil LPG100 --x0_csv data/start_params.csv
+  python scripts/fit_parameters_3_stage.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --x0_csv data/start_params.csv
 
 CSV-Format (Zeile 1: Einheiten, Zeile 2: Spaltennamen, ab Zeile 3: Daten):
   Spalten: oil, P1_mean [bar], T1_mean [°C], P2_mean [bar],

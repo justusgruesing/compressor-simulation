@@ -14,7 +14,7 @@ from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor_Modified,
 )
 #
-# Beispielaufruf: python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --params_csv results/matlab_fit/fitted_params_lpg68_original_....csv
+# Beispielaufruf: python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --params_csv results/matlab_fit/fitted_params_lpg68_original_matlab_fmincon_2026-02-23_011615.csv
 #
 # =========================
 # Defaults for YOUR CSV

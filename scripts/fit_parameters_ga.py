@@ -154,7 +154,7 @@ class SimpleInputs:
     control: Control
     T_amb: float
     # GA/solver tuning (read by Molinaroli_2017_Compressor via getattr)
-    lsq_max_nfev: int = 1000
+    lsq_max_nfev: int = 20000
     lsq_ftol: float = 1e-8
     lsq_xtol: float = 1e-8
 
@@ -630,7 +630,13 @@ def main():
 
     comp_pred  = make_compressor(args.model, N_max_hz, V_h_m3, params_best)
     comp_pred.med_prop = med
-    inputs_pred  = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
+    inputs_pred = SimpleInputs(
+        control=Control(n=1e-6),
+        T_amb=298.15,
+        lsq_max_nfev=20000,
+        lsq_ftol=1e-8,
+        lsq_xtol=1e-8,
+    )
     fs_state_pred = FlowsheetState()
 
     pred_rows = []

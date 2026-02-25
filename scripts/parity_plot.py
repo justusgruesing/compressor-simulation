@@ -1,17 +1,4 @@
 # scripts/parity_plot.py
-#
-# Creates Molinaroli-style parity plots from a fit_predictions CSV.
-# - Plots measured vs. calculated for m_dot, Pel, and (optionally) T_dis
-# - Uses style defaults from 'ebc.paper.mplstyle' (no manual overrides of sizes, dpi, grid, legend)
-# - For m_dot and Pel: 1:1 line and ±5% band (relative)
-# - For T_dis: 1:1 line and ±3 K absolute band
-# - Colors points outside the band differently
-# - Out-of-band count + error span as text inside the axes
-#
-# NEW:
-# - Output filenames include timestamp
-# - Summary includes the predictions filename/path
-
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -34,50 +21,49 @@ def _finite_mask(*arrs):
     return m
 
 
-def parity_plot(
+def _ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+
+def parity_plot_rel_band(
     x_meas: np.ndarray,
     y_calc: np.ndarray,
+    band: float,
     title: str,
     x_label: str,
     y_label: str,
     out_path: Path,
-    band_value: float,
-    band_mode: str = "rel",  # "rel" => ±band_value relative; "abs" => ±band_value in same units as x/y
+    *,
+    color_values: np.ndarray | None = None,
+    color_label: str = "Überhitzung [°C]",
+    cmap: str = "viridis",
+    cmin: float | None = None,
+    cmax: float | None = None,
+    point_size: int | None = None,
 ):
-    band_mode = str(band_mode).lower().strip()
-    if band_mode not in ("rel", "abs"):
-        raise ValueError("band_mode must be 'rel' or 'abs'")
+    # Filter finite + positive measured (avoid div by 0 in relative error)
+    if color_values is None:
+        m = _finite_mask(x_meas, y_calc) & (x_meas > 0)
+        c = None
+    else:
+        m = _finite_mask(x_meas, y_calc, color_values) & (x_meas > 0)
+        c = color_values[m]
 
-    # Filter finite + measured > 0 for rel-mode (avoid div by 0)
-    m = _finite_mask(x_meas, y_calc)
-    if band_mode == "rel":
-        m &= (x_meas > 0)
-
-    x = x_meas[m].astype(float)
-    y = y_calc[m].astype(float)
+    x = x_meas[m]
+    y = y_calc[m]
 
     if len(x) == 0:
         return {"n_total": 0, "n_outside": 0, "frac_outside": np.nan}
 
-    # Determine outside points + error statistics
-    if band_mode == "rel":
-        rel_err = (y / x) - 1.0
-        outside = np.abs(rel_err) > float(band_value)
-        err_min = float(np.min(rel_err) * 100.0)
-        err_max = float(np.max(rel_err) * 100.0)
-        band_label = f"±{int(round(float(band_value) * 100))}%"
-        info_span = f"Fehlerspanne: {err_min:.2f}% bis {err_max:.2f}%"
-    else:
-        abs_err = (y - x)
-        outside = np.abs(abs_err) > float(band_value)
-        err_min = float(np.min(abs_err))
-        err_max = float(np.max(abs_err))
-        band_label = f"±{float(band_value):g} K"
-        info_span = f"Fehlerspanne: {err_min:.2f} K bis {err_max:.2f} K"
+    rel_err = (y / x) - 1.0
+    outside = np.abs(rel_err) > band
 
     n_total = int(len(x))
     n_out = int(np.sum(outside))
     frac_out = float(n_out / n_total) if n_total else np.nan
+
+    err_min_pct = float(np.min(rel_err) * 100.0)
+    err_max_pct = float(np.max(rel_err) * 100.0)
 
     # Limits (square + padding)
     xy_min = float(min(np.min(x), np.min(y)))
@@ -91,177 +77,323 @@ def parity_plot(
 
     fig, ax = plt.subplots()
 
-    # Points: inside vs outside band
-    ax.scatter(
-        x[~outside],
-        y[~outside],
-        alpha=0.85,
-        label=f"innerhalb {band_label}",
-    )
-    ax.scatter(
-        x[outside],
-        y[outside],
-        alpha=0.95,
-        label=f"außerhalb {band_label} (n={n_out})",
-    )
-
     # Reference lines
     xx = np.linspace(lo, hi, 200)
+    ax.plot(xx, xx, linewidth=1.4, label="_nolegend_")  # 1:1 no legend
+    band_color = "0.5"
+    ax.plot(xx, (1.0 + band) * xx, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
+    ax.plot(xx, (1.0 - band) * xx, linestyle="--", linewidth=1.2, color=band_color, label=f"±{int(band*100)}%")
 
-    # 1:1 (no legend entry)
-    ax.plot(xx, xx, label="_nolegend_")
+    s = point_size
 
-    # Band lines
-    band_color = "0.5"  # neutral gray
-    if band_mode == "rel":
-        ax.plot(xx, (1.0 + float(band_value)) * xx, linestyle="--", color=band_color, label="_nolegend_")
-        ax.plot(xx, (1.0 - float(band_value)) * xx, linestyle="--", color=band_color, label=band_label)
+    if c is None:
+        ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{int(band*100)}%")
+        ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{int(band*100)}% (n={n_out})")
     else:
-        ax.plot(xx, xx + float(band_value), linestyle="--", color=band_color, label="_nolegend_")
-        ax.plot(xx, xx - float(band_value), linestyle="--", color=band_color, label=band_label)
+        vmin = float(np.nanmin(c)) if cmin is None else float(cmin)
+        vmax = float(np.nanmax(c)) if cmax is None else float(cmax)
 
-    # Title + labels (no fontsize overrides; style controls sizes)
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{int(band*100)}%")
+            ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{int(band*100)}% (n={n_out})")
+        else:
+            sc_in = ax.scatter(
+                x[~outside], y[~outside],
+                c=c[~outside], cmap=cmap, vmin=vmin, vmax=vmax,
+                s=s, alpha=0.90, edgecolors="none",
+                label=f"innerhalb ±{int(band*100)}%",
+            )
+            ax.scatter(
+                x[outside], y[outside],
+                c=c[outside], cmap=cmap, vmin=vmin, vmax=vmax,
+                s=s, alpha=0.98, edgecolors="black", linewidths=0.6,
+                label=f"außerhalb ±{int(band*100)}% (n={n_out})",
+            )
+            cbar = fig.colorbar(sc_in, ax=ax, pad=0.02)
+            cbar.set_label(color_label)
+
     ax.set_title(title)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
 
-    # Quantification text
     info_txt = (
-        f"Außerhalb {band_label}: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
-        f"{info_span}"
+        f"Außerhalb ±{int(band*100)}%: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
+        f"Fehlerspanne: {err_min_pct:.2f}% bis {err_max_pct:.2f}%"
     )
     ax.text(
         0.02, 0.98, info_txt,
         transform=ax.transAxes,
         ha="left", va="top",
+        fontsize=11,
         bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="0.7"),
     )
 
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
+    ax.grid(True, linewidth=0.6, alpha=0.35)
 
-    # No explicit styling here; rely on mplstyle defaults
-    ax.grid(True)
-    ax.legend()
-
+    ax.legend(loc="lower right", frameon=True)
     fig.tight_layout()
-    fig.savefig(out_path)
+    fig.savefig(out_path, dpi=200)
     plt.close(fig)
 
     return {"n_total": n_total, "n_outside": n_out, "frac_outside": frac_out}
 
 
+def parity_plot_abs_band(
+    x_meas: np.ndarray,
+    y_calc: np.ndarray,
+    band_abs: float,
+    title: str,
+    x_label: str,
+    y_label: str,
+    out_path: Path,
+    *,
+    color_values: np.ndarray | None = None,
+    color_label: str = "Überhitzung [°C]",
+    cmap: str = "viridis",
+    cmin: float | None = None,
+    cmax: float | None = None,
+    point_size: int | None = None,
+):
+    if color_values is None:
+        m = _finite_mask(x_meas, y_calc)
+        c = None
+    else:
+        m = _finite_mask(x_meas, y_calc, color_values)
+        c = color_values[m]
+
+    x = x_meas[m]
+    y = y_calc[m]
+    if len(x) == 0:
+        return {"n_total": 0, "n_outside": 0, "frac_outside": np.nan}
+
+    diff = y - x
+    outside = np.abs(diff) > band_abs
+
+    n_total = int(len(x))
+    n_out = int(np.sum(outside))
+    frac_out = float(n_out / n_total) if n_total else np.nan
+
+    # Limits
+    xy_min = float(min(np.min(x), np.min(y)))
+    xy_max = float(max(np.max(x), np.max(y)))
+    if xy_min == xy_max:
+        xy_min *= 0.95
+        xy_max *= 1.05
+    pad = 0.05 * (xy_max - xy_min)
+    lo = xy_min - pad
+    hi = xy_max + pad
+
+    fig, ax = plt.subplots()
+
+    xx = np.linspace(lo, hi, 200)
+    ax.plot(xx, xx, linewidth=1.4, label="_nolegend_")
+    band_color = "0.5"
+    ax.plot(xx, xx + band_abs, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
+    ax.plot(xx, xx - band_abs, linestyle="--", linewidth=1.2, color=band_color, label=f"±{band_abs:.0f}°C")
+
+    s = point_size
+
+    if c is None:
+        ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{band_abs:.0f}°C")
+        ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{band_abs:.0f}°C (n={n_out})")
+    else:
+        vmin = float(np.nanmin(c)) if cmin is None else float(cmin)
+        vmax = float(np.nanmax(c)) if cmax is None else float(cmax)
+
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{band_abs:.0f}°C")
+            ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{band_abs:.0f}°C (n={n_out})")
+        else:
+            sc_in = ax.scatter(
+                x[~outside], y[~outside],
+                c=c[~outside], cmap=cmap, vmin=vmin, vmax=vmax,
+                s=s, alpha=0.90, edgecolors="none",
+                label=f"innerhalb ±{band_abs:.0f}°C",
+            )
+            ax.scatter(
+                x[outside], y[outside],
+                c=c[outside], cmap=cmap, vmin=vmin, vmax=vmax,
+                s=s, alpha=0.98, edgecolors="black", linewidths=0.6,
+                label=f"außerhalb ±{band_abs:.0f}°C (n={n_out})",
+            )
+            cbar = fig.colorbar(sc_in, ax=ax, pad=0.02)
+            cbar.set_label(color_label)
+
+    ax.set_title(title)
+
+    info_txt = (
+        f"Außerhalb ±{band_abs:.0f}°C: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
+        f"Fehlerspanne: {float(np.min(diff)):.2f}°C bis {float(np.max(diff)):.2f}°C"
+    )
+    ax.text(
+        0.02, 0.98, info_txt,
+        transform=ax.transAxes,
+        ha="left", va="top",
+        fontsize=11,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="0.7"),
+    )
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.grid(True, linewidth=0.6, alpha=0.35)
+    ax.legend(loc="lower right", frameon=True)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+    return {"n_total": n_total, "n_outside": n_out, "frac_outside": frac_out}
+
+
+def _pick_pair(df: pd.DataFrame, candidates: list[tuple[str, str]]):
+    """Return first (meas, calc) pair that exists, else None."""
+    for a, b in candidates:
+        if a in df.columns and b in df.columns:
+            return a, b
+    return None
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Create parity plots from fit_predictions CSV using ebc.paper.mplstyle.")
-    ap.add_argument("--pred_csv", required=True, help="Path to fit_predictions_*.csv")
+    ap = argparse.ArgumentParser(description="Create parity plots from predictions OR run_batch CSV.")
+    ap.add_argument("--pred_csv", required=True, help="Path to CSV (predictions or run_batch output)")
     ap.add_argument("--out_dir", default="results/parity_plots", help="Output directory for PNGs and summary CSV")
 
-    # Bands
-    ap.add_argument("--band_rel", type=float, default=0.05, help="Relative error band for m_dot and Pel (default 0.05 = ±5%)")
-    ap.add_argument("--band_Tdis_K", type=float, default=3.0, help="Absolute band for T_dis in K/°C (default ±3 K)")
+    ap.add_argument("--band", type=float, default=0.05, help="Relative error band (default 0.05 = ±5%)")
+    ap.add_argument("--band_T_dis_abs", type=float, default=3.0, help="Absolute band for T_dis in °C (default ±3°C)")
+
+    ap.add_argument("--color_by_superheat", action="store_true",
+                    help="Color points by column 'superheat_C' and show a colorbar on the right.")
+    ap.add_argument("--cmin", type=float, default=None, help="Optional: fixed min for color scale (superheat_C)")
+    ap.add_argument("--cmax", type=float, default=None, help="Optional: fixed max for color scale (superheat_C)")
+    ap.add_argument("--cmap", default="viridis", help="Matplotlib colormap name (default: viridis)")
+    ap.add_argument("--point_size", type=int, default=None, help="Optional: scatter point size (overrides style)")
 
     args = ap.parse_args()
 
-    pred_path = Path(args.pred_csv)
-    if not pred_path.exists():
-        raise FileNotFoundError(pred_path)
+    csv_path = Path(args.pred_csv)
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
 
     out_dir = Path(args.out_dir)
     _ensure_out_dir(out_dir)
 
-    df = pd.read_csv(pred_path)
+    df = pd.read_csv(csv_path)
+    stamp = _ts()
+    src_name = csv_path.name
 
-    # Timestamp for filenames
-    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    # Color values (optional)
+    use_color = bool(args.color_by_superheat) and ("superheat_C" in df.columns)
+    color_vals = df["superheat_C"].to_numpy(dtype=float) if use_color else None
+
+    # --- Column mapping: predictions vs run_batch ---
+    # m_dot candidates:
+    m_pair = _pick_pair(df, [
+        ("m_meas_gps", "m_calc_gps"),   # GA predictions format
+        ("m_meas_g_s", "m_flow_g_s"),   # run_batch format
+    ])
+
+    # Pel candidates:
+    p_pair = _pick_pair(df, [
+        ("P_meas_W", "P_calc_W"),       # GA predictions format
+        ("P_meas_W", "P_el_W"),         # run_batch format
+    ])
+
+    # T_dis candidates (absolute band ±3°C):
+    t_pair = _pick_pair(df, [
+        ("T_dis_meas_C", "T_dis_calc_C"),  # predictions format
+        ("T_dis_meas_C", "T_dis_C"),       # possible run_batch extension
+    ])
 
     summary = []
-    pred_name = pred_path.name
-    pred_path_str = str(pred_path)
+    generated_any = False
 
-    # m_dot: relative band
-    if {"m_meas_gps", "m_calc_gps"}.issubset(df.columns):
-        out_png = out_dir / f"parity_m_dot_{ts}.png"
-        stats = parity_plot(
-            x_meas=df["m_meas_gps"].to_numpy(dtype=float),
-            y_calc=df["m_calc_gps"].to_numpy(dtype=float),
-            band_value=float(args.band_rel),
-            band_mode="rel",
+    if m_pair is not None:
+        meas, calc = m_pair
+        stats = parity_plot_rel_band(
+            x_meas=df[meas].to_numpy(dtype=float),
+            y_calc=df[calc].to_numpy(dtype=float),
+            band=args.band,
             title="Parity Plot: Massenstrom",
-            x_label="ṁ_meas [g/s]",
-            y_label="ṁ_calc [g/s]",
-            out_path=out_png,
+            x_label=f"{meas} [g/s]",
+            y_label=f"{calc} [g/s]",
+            out_path=out_dir / f"parity_m_dot_{stamp}.png",
+            color_values=color_vals,
+            color_label="Überhitzung [°C]",
+            cmap=args.cmap,
+            cmin=args.cmin,
+            cmax=args.cmax,
+            point_size=args.point_size,
         )
-        stats.update({
-            "metric": "m_dot",
-            "x_col": "m_meas_gps",
-            "y_col": "m_calc_gps",
-            "band_mode": "rel",
-            "band_value": float(args.band_rel),
-            "predictions_file": pred_name,
-            "predictions_path": pred_path_str,
-            "out_png": str(out_png),
-            "timestamp": ts,
-        })
+        stats.update({"metric": "m_dot", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
+        generated_any = True
+        print(f"[OK] m_dot plot: {meas} vs {calc}")
+    else:
+        print("[SKIP] m_dot plot: keine passenden Spalten gefunden.")
 
-    # Pel: relative band
-    if {"P_meas_W", "P_calc_W"}.issubset(df.columns):
-        out_png = out_dir / f"parity_P_el_{ts}.png"
-        stats = parity_plot(
-            x_meas=df["P_meas_W"].to_numpy(dtype=float),
-            y_calc=df["P_calc_W"].to_numpy(dtype=float),
-            band_value=float(args.band_rel),
-            band_mode="rel",
+    if p_pair is not None:
+        meas, calc = p_pair
+        stats = parity_plot_rel_band(
+            x_meas=df[meas].to_numpy(dtype=float),
+            y_calc=df[calc].to_numpy(dtype=float),
+            band=args.band,
             title="Parity Plot: Elektrische Leistung",
-            x_label="P_el,meas [W]",
-            y_label="P_el,calc [W]",
-            out_path=out_png,
+            x_label=f"{meas} [W]",
+            y_label=f"{calc} [W]",
+            out_path=out_dir / f"parity_P_el_{stamp}.png",
+            color_values=color_vals,
+            color_label="Überhitzung [°C]",
+            cmap=args.cmap,
+            cmin=args.cmin,
+            cmax=args.cmax,
+            point_size=args.point_size,
         )
-        stats.update({
-            "metric": "P_el",
-            "x_col": "P_meas_W",
-            "y_col": "P_calc_W",
-            "band_mode": "rel",
-            "band_value": float(args.band_rel),
-            "predictions_file": pred_name,
-            "predictions_path": pred_path_str,
-            "out_png": str(out_png),
-            "timestamp": ts,
-        })
+        stats.update({"metric": "P_el", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
+        generated_any = True
+        print(f"[OK] P_el plot: {meas} vs {calc}")
+    else:
+        print("[SKIP] P_el plot: keine passenden Spalten gefunden.")
 
-    # T_dis: absolute band ±3 K (°C differences same magnitude)
-    if {"T_dis_meas_C", "T_dis_calc_C"}.issubset(df.columns):
-        out_png = out_dir / f"parity_T_dis_{ts}.png"
-        stats = parity_plot(
-            x_meas=df["T_dis_meas_C"].to_numpy(dtype=float),
-            y_calc=df["T_dis_calc_C"].to_numpy(dtype=float),
-            band_value=float(args.band_Tdis_K),
-            band_mode="abs",
+    if t_pair is not None:
+        meas, calc = t_pair
+        stats = parity_plot_abs_band(
+            x_meas=df[meas].to_numpy(dtype=float),
+            y_calc=df[calc].to_numpy(dtype=float),
+            band_abs=args.band_T_dis_abs,
             title="Parity Plot: Austrittstemperatur",
-            x_label="T_dis,meas [°C]",
-            y_label="T_dis,calc [°C]",
-            out_path=out_png,
+            x_label=f"{meas} [°C]",
+            y_label=f"{calc} [°C]",
+            out_path=out_dir / f"parity_T_dis_{stamp}.png",
+            color_values=color_vals,
+            color_label="Überhitzung [°C]",
+            cmap=args.cmap,
+            cmin=args.cmin,
+            cmax=args.cmax,
+            point_size=args.point_size,
         )
-        stats.update({
-            "metric": "T_dis",
-            "x_col": "T_dis_meas_C",
-            "y_col": "T_dis_calc_C",
-            "band_mode": "abs",
-            "band_value": float(args.band_Tdis_K),
-            "predictions_file": pred_name,
-            "predictions_path": pred_path_str,
-            "out_png": str(out_png),
-            "timestamp": ts,
-        })
+        stats.update({"metric": "T_dis", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
+        generated_any = True
+        print(f"[OK] T_dis plot: {meas} vs {calc}")
+    else:
+        print("[SKIP] T_dis plot: keine passenden Spalten gefunden (keine Mess-/Calc-Paarung).")
 
-    # Write summary
     if summary:
         summary_df = pd.DataFrame(summary)
-        summary_csv = out_dir / f"parity_summary_{ts}.csv"
+        summary_csv = out_dir / f"parity_summary_{stamp}.csv"
         summary_df.to_csv(summary_csv, index=False)
-        print("Saved:", summary_csv)
+        print("[OK] Saved summary:", summary_csv)
+
+    if not generated_any:
+        print("\n[ERROR] Es wurden keine Plots erzeugt, weil keine erwarteten Spalten gefunden wurden.")
+        print("        Gefundene Spalten im CSV sind z.B.:")
+        print("        ", ", ".join(list(df.columns)[:25]), ("..." if len(df.columns) > 25 else ""))
 
     print("Done. Output dir:", out_dir)
 

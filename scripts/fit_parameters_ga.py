@@ -13,14 +13,13 @@
 # Uses REFPROP backend via vclibpy.media.RefProp
 #
 # Beispielaufruf (seriell):
-#   python scripts/fit_molinaroli_ga.py --csv data/Datensatz_Fitting_1.csv \
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv \
 #       --oil LPG68 --model original --refrigerant PROPANE \
-#       --generations 50 --population 10
+#       --generations 50 --population 20
 #
-# Beispielaufruf (parallel, alle Kerne):
-#   python scripts/fit_molinaroli_ga.py --csv data/Datensatz_Fitting_1.csv \
-#       --oil LPG68 --model original --refrigerant PROPANE \
-#       --generations 1000 --population 20 --n_jobs 12
+# Beispielaufruf (parallel):
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 50 --population 20
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 10 --population 20 --lsq_max_nfev 10000 --ind_timeout_s 30
 #
 # Key design decisions:
 # - Compressor built ONCE per individual (not per data point).
@@ -154,6 +153,10 @@ class Control:
 class SimpleInputs:
     control: Control
     T_amb: float
+    # GA/solver tuning (read by Molinaroli_2017_Compressor via getattr)
+    lsq_max_nfev: int = 1000
+    lsq_ftol: float = 1e-8
+    lsq_xtol: float = 1e-8
 
 def _clamp01(x): return max(1e-9, min(1.0, float(x)))
 
@@ -183,7 +186,7 @@ def simulate_point(comp, med, inputs: SimpleInputs, fs_state: FlowsheetState,
 # Objective function
 # -------------------------
 def objective_error(x, rows, med, model, N_max_hz, V_h_m3,
-                    m_dot_ref, use_Tdis, Tdis_norm_K) -> float:
+                    m_dot_ref, use_Tdis, Tdis_norm_K, lsq_max_nfev: int) -> float:
     """
     error = Σ_i [ (Δm/m_meas)² + (ΔW/W_meas)² + (ΔT/T_norm)² ]
     Compressor built ONCE per individual, inputs/fs_state reused per point.
@@ -195,7 +198,13 @@ def objective_error(x, rows, med, model, N_max_hz, V_h_m3,
     comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
     comp.med_prop = med
 
-    inputs   = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
+    inputs = SimpleInputs(
+        control=Control(n=1e-6),
+        T_amb=298.15,
+        lsq_max_nfev=int(lsq_max_nfev),
+        lsq_ftol=1e-8,
+        lsq_xtol=1e-8,
+    )
     fs_state = FlowsheetState()
 
     err = 0.0
@@ -222,7 +231,7 @@ def objective_error(x, rows, med, model, N_max_hz, V_h_m3,
 _WORK: dict = {}
 
 def _init_worker(refrigerant, model, N_max_hz, V_h_m3,
-                 m_dot_ref, rows_train, use_Tdis, Tdis_norm_K):
+                 m_dot_ref, rows_train, use_Tdis, Tdis_norm_K, lsq_max_nfev):
     """
     Runs ONCE per worker process.
     Creates a private RefProp instance AND a private working directory
@@ -266,6 +275,7 @@ def _init_worker(refrigerant, model, N_max_hz, V_h_m3,
         "use_Tdis":     bool(use_Tdis),
         "Tdis_norm_K":  float(Tdis_norm_K),
         "worker_dir":   str(worker_dir),  # debug/trace
+        "lsq_max_nfev": int(lsq_max_nfev),
     }
 
 def _objective_error_worker(x_in) -> float:
@@ -275,6 +285,7 @@ def _objective_error_worker(x_in) -> float:
         x, _WORK["rows_train"], _WORK["med"], _WORK["model"],
         _WORK["N_max_hz"], _WORK["V_h_m3"], _WORK["m_dot_ref"],
         _WORK["use_Tdis"], _WORK["Tdis_norm_K"],
+        _WORK["lsq_max_nfev"],
     )
 
 # -------------------------
@@ -383,6 +394,11 @@ def main():
     ap.add_argument("--n_jobs", type=int, default=0,
                     help="Anzahl Worker-Prozesse. 0=auto (alle Kerne), 1=seriell")
 
+    ap.add_argument("--lsq_max_nfev", type=int, default=1000,
+                    help="max_nfev for scipy.least_squares inside Molinaroli model")
+    ap.add_argument("--ind_timeout_s", type=float, default=120.0,
+                    help="Timeout per population = ind_timeouts_s * population. 0 disables.")
+
     args = ap.parse_args()
 
     if not args.csv.exists():
@@ -442,12 +458,12 @@ def main():
     vic_hi = args.vic_hi_scale * V_h_m3
     bounds = np.array([
         [2.0,   60.0  ],   # Ua_suc_ref
-        [2.0,   60.0  ],   # Ua_dis_ref
-        [0.05,   3.0  ],   # Ua_amb
+        [5.0,   60.0  ],   # Ua_dis_ref
+        [0.1,   3.0  ],   # Ua_amb
         [5e-9,  1e-7  ],   # A_tot  (log-uniform)
-        [2e-5,  1e-4  ],   # A_dis  (log-uniform)
+        [4e-6,  1e-4  ],   # A_dis  (log-uniform)
         [vic_lo, vic_hi],  # V_IC
-        [0.05,   0.4  ],   # alpha_loss
+        [0.05,   0.35  ],   # alpha_loss
         [0.0,  300.0  ],   # W_dot_loss_ref
     ], dtype=float)
 
@@ -475,26 +491,66 @@ def main():
             for i, ind in enumerate(pop):
                 errs[i] = objective_error(
                     ind, rows_train, med, args.model,
-                    N_max_hz, V_h_m3, m_dot_ref, use_Tdis, args.Tdis_norm_K,
+                    N_max_hz, V_h_m3, m_dot_ref, use_Tdis, args.Tdis_norm_K, args.lsq_max_nfev
                 )
             return errs
         executor = None
     else:
-        # Paralleler Pfad — ProcessPoolExecutor, einmal erstellt für alle Generationen
-        executor = ProcessPoolExecutor(
-            max_workers=n_jobs,
-            initializer=_init_worker,
-            initargs=(
-                str(args.refrigerant), str(args.model),
-                float(N_max_hz), float(V_h_m3), float(m_dot_ref),
-                rows_train, bool(use_Tdis), float(args.Tdis_norm_K),
-            ),
-        )
-        def eval_pop(pop):
-            return np.asarray(
-                list(executor.map(_objective_error_worker, pop, chunksize=1)),
-                dtype=float,
+
+        def make_executor():
+            return ProcessPoolExecutor(
+                max_workers=n_jobs,
+                initializer=_init_worker,
+                initargs=(
+                    str(args.refrigerant), str(args.model),
+                    float(N_max_hz), float(V_h_m3), float(m_dot_ref),
+                    rows_train, bool(use_Tdis), float(args.Tdis_norm_K),
+                    int(args.lsq_max_nfev),
+                ),
             )
+
+        executor = make_executor()
+
+        from concurrent.futures import wait, FIRST_COMPLETED
+
+        def eval_pop(pop):
+            nonlocal executor
+
+            futs = {executor.submit(_objective_error_worker, ind): i for i, ind in enumerate(pop)}
+            errs = np.full(len(pop), 3.0 * FAIL_E ** 2, dtype=float)
+
+            timeout_s = float(args.ind_timeout_s)
+            if timeout_s <= 0:
+                # no timeout: block until all finished
+                for f, i in futs.items():
+                    try:
+                        errs[i] = float(f.result())
+                    except Exception:
+                        errs[i] = 3.0 * FAIL_E ** 2
+                return errs
+
+            # total budget: timeout per individual * population
+            total_budget = timeout_s * len(pop)
+            done, not_done = wait(futs.keys(), timeout=total_budget)
+
+            # collect done
+            for f in done:
+                i = futs[f]
+                try:
+                    errs[i] = float(f.result())  # no timeout needed, it's done
+                except Exception:
+                    errs[i] = 3.0 * FAIL_E ** 2
+
+            # penalize not done
+            if not_done:
+                timed_out_indices = [futs[f] for f in not_done]
+                print(f"[WARN] Gesamt-Timeout: {len(not_done)} Individuen penalisiert -> Pool Neustart")
+
+                # IMPORTANT on Windows: kill the stuck worker pool and recreate
+                executor.shutdown(wait=False, cancel_futures=True)
+                executor = make_executor()
+
+            return errs
 
     print(f"  Parallelisierung: {'seriell' if n_jobs == 1 else f'{n_jobs} Worker-Prozesse'}")
     print(f"  Populationsgröße: {pop_size}  |  Eliten: {elite_k}  |  Generationen: {args.generations}")
@@ -615,7 +671,7 @@ def main():
 
     final_err = objective_error(
         best_x, rows_train, med, args.model,
-        N_max_hz, V_h_m3, m_dot_ref, use_Tdis, args.Tdis_norm_K,
+        N_max_hz, V_h_m3, m_dot_ref, use_Tdis, args.Tdis_norm_K, args.lsq_max_nfev
     )
 
     # --- Statistik ---

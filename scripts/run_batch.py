@@ -30,8 +30,11 @@ P_OUT_COL_DEFAULT = "P2_mean"         # bar
 T_AMB_COL_DEFAULT = "Tamb_mean"       # °C
 SPEED_COL_DEFAULT = "N"               # rpm (1/min)
 
-# NEW: Oil sump temperature
+# Oil sump temperature
 T_OIL_SUMP_COL_DEFAULT = "T7_mean"    # °C
+
+# Measured discharge temperature from dataset
+T_DIS_MEAS_COL_DEFAULT = "T2_mean"    # °C
 
 # Optional measurement columns (if present -> compute relative errors)
 M_FLOW_MEAS_COL_DEFAULT = "suction_mf_mean"  # g/s
@@ -199,8 +202,11 @@ def main():
     ap.add_argument("--col_T_amb", default=T_AMB_COL_DEFAULT)
     ap.add_argument("--col_speed", default=SPEED_COL_DEFAULT)
 
-    # NEW: oil sump temperature column
-    ap.add_argument("--col_T_oil_sump", default=T_OIL_SUMP_COL_DEFAULT, help="Optional: measured oil sump temperature column (°C)")
+    # Optional measurement columns (pass-through)
+    ap.add_argument("--col_T_oil_sump", default=T_OIL_SUMP_COL_DEFAULT,
+                    help="Optional: measured oil sump temperature column (°C)")
+    ap.add_argument("--col_T_dis_meas", default=T_DIS_MEAS_COL_DEFAULT,
+                    help="Optional: measured discharge temperature column (°C), e.g. T2_mean")
 
     ap.add_argument("--col_m_meas", default=M_FLOW_MEAS_COL_DEFAULT, help="Optional: measured m_dot column (g/s)")
     ap.add_argument("--col_P_meas", default=P_EL_MEAS_COL_DEFAULT, help="Optional: measured Pel column (W)")
@@ -269,6 +275,7 @@ def main():
     has_m_meas = args.col_m_meas in df.columns
     has_P_meas = args.col_P_meas in df.columns
     has_T_oil = args.col_T_oil_sump in df.columns
+    has_T_dis_meas = args.col_T_dis_meas in df.columns
 
     results = []
 
@@ -278,6 +285,15 @@ def main():
         T_suc_K = c_to_k(row[args.col_T_suc])
         T_amb_K = c_to_k(row[args.col_T_amb])
         f_oper_hz = rpm_to_hz(row[args.col_speed])
+        # --- Superheat at suction: T_suc - T_sat_vap(p_suc) ---
+        # Using saturated vapor (Q=1) at suction pressure
+        try:
+            st_sat = med.calc_state("PQ", float(p_suc_pa), 1.0)  # Q=1 -> saturated vapor
+            T_sat_suc_K = _finite(getattr(st_sat, "T", np.nan))
+            T_sat_suc_C = k_to_c(T_sat_suc_K) if np.isfinite(T_sat_suc_K) else float("nan")
+            superheat_C = float(row[args.col_T_suc]) - T_sat_suc_C if np.isfinite(T_sat_suc_C) else float("nan")
+        except Exception:
+            superheat_C = float("nan")
 
         n_rel = float(max(1e-6, min(1.0, f_oper_hz / N_max_hz)))
 
@@ -298,6 +314,7 @@ def main():
             "p_suc_bar_in": float(row[args.col_p_suc]),
             "T_suc_C_in": float(row[args.col_T_suc]),
             "p_out_bar_in": float(row[args.col_p_out]),
+            "superheat_C": float(superheat_C),
             "T_amb_C_in": float(row[args.col_T_amb]),
             "N_rpm_in": float(row[args.col_speed]),
             "f_oper_hz": float(f_oper_hz),
@@ -305,8 +322,11 @@ def main():
             "n_abs_hz": float(n_abs),
         }
 
-        # NEW: oil sump temperature from dataset (pass-through)
-        rec["T_oil_sump_C_meas"] = float(row[args.col_T_oil_sump]) if (has_T_oil and pd.notna(row[args.col_T_oil_sump])) else np.nan
+        # Optional pass-through measurements from dataset
+        rec["T_oil_sump_C_meas"] = float(row[args.col_T_oil_sump]) if (
+                    has_T_oil and pd.notna(row[args.col_T_oil_sump])) else np.nan
+        rec["T_dis_meas_C"] = float(row[args.col_T_dis_meas]) if (
+                    has_T_dis_meas and pd.notna(row[args.col_T_dis_meas])) else np.nan
 
         fs_state = FlowsheetState()
 
@@ -374,6 +394,14 @@ def main():
                 P_meas = float(row[args.col_P_meas])
                 rec["e_P_rel"] = (rec["P_el_W"] / P_meas) - 1.0 if P_meas > 0 else np.nan
 
+            # NEW: absolute temperature deviation (only if measured discharge temp exists)
+            if np.isfinite(rec.get("T_dis_meas_C", np.nan)) and np.isfinite(rec.get("T_dis_C", np.nan)):
+                rec["e_T_dis_abs_C"] = float(rec["T_dis_C"] - rec["T_dis_meas_C"])  # signed
+                rec["e_T_dis_abs_abs_C"] = float(abs(rec["e_T_dis_abs_C"]))  # absolute value
+            else:
+                rec["e_T_dis_abs_C"] = np.nan
+                rec["e_T_dis_abs_abs_C"] = np.nan
+
         except Exception as e:
             rec["success"] = False
             rec["error"] = str(e)
@@ -393,6 +421,9 @@ def main():
             rec["W_dot_loss_W"] = np.nan
             rec["W_dot_int_plus_loss_W"] = np.nan
             rec["W_dot_loss_share"] = np.nan
+
+            rec["e_T_dis_abs_C"] = np.nan
+            rec["e_T_dis_abs_abs_C"] = np.nan
 
             if has_m_meas:
                 rec["m_meas_g_s"] = float(row[args.col_m_meas]) if pd.notna(row[args.col_m_meas]) else np.nan
@@ -422,6 +453,8 @@ def main():
         "p_out_bar_in",
         "T_amb_C_in",
         "T_oil_sump_C_meas",
+        "T_dis_meas_C",
+        "superheat_C",
         "N_rpm_in",
         "f_oper_hz",
         "n_rel",
@@ -458,6 +491,8 @@ def main():
         "e_m_rel",
         "P_meas_W",
         "e_P_rel",
+        "e_T_dis_abs_C",
+        "e_T_dis_abs_abs_C",
     ]
 
     # Nur Spalten nehmen, die wirklich existieren (robust bei optionalen Spalten)

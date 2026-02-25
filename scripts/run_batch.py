@@ -13,9 +13,12 @@ from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor,
     Molinaroli_2017_Compressor_Modified,
 )
+
 #
-# Beispielaufruf: python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --params_csv results/matlab_fit/fitted_params_lpg68_original_matlab_fmincon_2026-02-23_011615.csv
+# Beispielaufruf:
+# python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --params_csv results/ga_fit/fitted_params_lpg68_original_ga_2026-02-25_130347.csv
 #
+
 # =========================
 # Defaults for YOUR CSV
 # =========================
@@ -26,6 +29,9 @@ T_SUC_COL_DEFAULT = "T1_mean"         # °C
 P_OUT_COL_DEFAULT = "P2_mean"         # bar
 T_AMB_COL_DEFAULT = "Tamb_mean"       # °C
 SPEED_COL_DEFAULT = "N"               # rpm (1/min)
+
+# NEW: Oil sump temperature
+T_OIL_SUMP_COL_DEFAULT = "T7_mean"    # °C
 
 # Optional measurement columns (if present -> compute relative errors)
 M_FLOW_MEAS_COL_DEFAULT = "suction_mf_mean"  # g/s
@@ -57,7 +63,7 @@ DEFAULT_PARAMS = {
     "Ua_dis_ref": 13.96,
     "Ua_amb": 0.36,
     "A_tot": 9.47e-9,
-    "A_dis": 86.1e-6,   # important: e-6 (matches your fitting scripts)
+    "A_dis": 86.1e-6,
     "V_IC": 16.11e-6,
     "alpha_loss": 0.16,
     "W_dot_loss_ref": 83.0,
@@ -147,12 +153,13 @@ def _finite(x):
 
 def _add_compact_state(rec: dict, prefix: str, st) -> None:
     """
-    Only p and T (plus density for internal m_dot_3 calculation / debugging).
+    Output only:
+      - pressure in bar
+      - temperature in °C
+      - density in kg/m³ (kept for debugging)
     """
     if st is None:
-        rec[f"{prefix}_p_Pa"] = float("nan")
         rec[f"{prefix}_p_bar"] = float("nan")
-        rec[f"{prefix}_T_K"] = float("nan")
         rec[f"{prefix}_T_C"] = float("nan")
         rec[f"{prefix}_rho_kgpm3"] = float("nan")
         return
@@ -161,9 +168,7 @@ def _add_compact_state(rec: dict, prefix: str, st) -> None:
     T = _finite(getattr(st, "T", np.nan))
     rho = _finite(getattr(st, "d", np.nan))
 
-    rec[f"{prefix}_p_Pa"] = p
     rec[f"{prefix}_p_bar"] = pa_to_bar(p) if np.isfinite(p) else float("nan")
-    rec[f"{prefix}_T_K"] = T
     rec[f"{prefix}_T_C"] = k_to_c(T) if np.isfinite(T) else float("nan")
     rec[f"{prefix}_rho_kgpm3"] = rho
 
@@ -194,6 +199,9 @@ def main():
     ap.add_argument("--col_T_amb", default=T_AMB_COL_DEFAULT)
     ap.add_argument("--col_speed", default=SPEED_COL_DEFAULT)
 
+    # NEW: oil sump temperature column
+    ap.add_argument("--col_T_oil_sump", default=T_OIL_SUMP_COL_DEFAULT, help="Optional: measured oil sump temperature column (°C)")
+
     ap.add_argument("--col_m_meas", default=M_FLOW_MEAS_COL_DEFAULT, help="Optional: measured m_dot column (g/s)")
     ap.add_argument("--col_P_meas", default=P_EL_MEAS_COL_DEFAULT, help="Optional: measured Pel column (W)")
 
@@ -212,7 +220,7 @@ def main():
         out_path.parent.mkdir(parents=True, exist_ok=True)
     else:
         Path("results").mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         out_path = Path("results") / f"batch_{args.oil.lower()}_{args.model.lower()}_{ts}.csv"
 
     # Read dataset CSV
@@ -260,6 +268,7 @@ def main():
 
     has_m_meas = args.col_m_meas in df.columns
     has_P_meas = args.col_P_meas in df.columns
+    has_T_oil = args.col_T_oil_sump in df.columns
 
     results = []
 
@@ -285,7 +294,7 @@ def main():
             "backend": "RefProp",
             "refrigerant": args.refrigerant,
             "oil": str(row[args.oil_col]) if args.oil_col in df.columns else "",
-            # Inputs
+            # Inputs (only bar / °C)
             "p_suc_bar_in": float(row[args.col_p_suc]),
             "T_suc_C_in": float(row[args.col_T_suc]),
             "p_out_bar_in": float(row[args.col_p_out]),
@@ -296,6 +305,9 @@ def main():
             "n_abs_hz": float(n_abs),
         }
 
+        # NEW: oil sump temperature from dataset (pass-through)
+        rec["T_oil_sump_C_meas"] = float(row[args.col_T_oil_sump]) if (has_T_oil and pd.notna(row[args.col_T_oil_sump])) else np.nan
+
         fs_state = FlowsheetState()
 
         try:
@@ -303,7 +315,7 @@ def main():
             inputs = SimpleInputs(control=Control(n=n_rel), T_amb=float(T_amb_K))
             comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
 
-            # Compact thermodynamic states (p,T,rho)
+            # Compact thermodynamic states (only bar/°C/rho)
             _add_compact_state(rec, "st_in", getattr(comp, "state_inlet", None))
             _add_compact_state(rec, "c1", getattr(comp, "state_c_1", None))
             _add_compact_state(rec, "c3", getattr(comp, "state_c_3", None))
@@ -316,15 +328,15 @@ def main():
             rec["m_flow_g_s"] = float(comp.m_flow) * 1000.0
             rec["P_el_W"] = float(comp.P_el)
 
-            # Wall temperature
-            rec["T_wall_K"] = _finite(getattr(comp, "T_w", np.nan))
-            rec["T_wall_C"] = k_to_c(rec["T_wall_K"]) if np.isfinite(rec["T_wall_K"]) else float("nan")
+            # Wall temperature (only °C)
+            T_wall_K = _finite(getattr(comp, "T_w", np.nan))
+            rec["T_wall_C"] = k_to_c(T_wall_K) if np.isfinite(T_wall_K) else float("nan")
 
-            # Discharge temperature shortcut
-            rec["T_dis_K"] = _finite(getattr(comp.state_outlet, "T", np.nan))
-            rec["T_dis_C"] = k_to_c(rec["T_dis_K"]) if np.isfinite(rec["T_dis_K"]) else float("nan")
+            # Discharge temperature shortcut (only °C)
+            T_dis_K = _finite(getattr(comp.state_outlet, "T", np.nan))
+            rec["T_dis_C"] = k_to_c(T_dis_K) if np.isfinite(T_dis_K) else float("nan")
 
-            # Internal mass flow & Wdot split (reconstructed from states, like in your model)
+            # Internal mass flow & Wdot split
             try:
                 rho3 = float(getattr(comp, "state_c_3").d)
                 h3 = float(getattr(comp, "state_c_3").h)
@@ -373,9 +385,7 @@ def main():
             rec["m_flow_kg_s"] = np.nan
             rec["m_flow_g_s"] = np.nan
             rec["P_el_W"] = np.nan
-            rec["T_wall_K"] = np.nan
             rec["T_wall_C"] = np.nan
-            rec["T_dis_K"] = np.nan
             rec["T_dis_C"] = np.nan
 
             rec["m_dot_3_kg_s"] = np.nan
@@ -394,6 +404,77 @@ def main():
         results.append(rec)
 
     out_df = pd.DataFrame(results)
+
+    # -------------------------
+    # Column order: Inputs -> States -> Outputs -> Errors
+    # -------------------------
+    # Inputs (inkl. "meta" + gemessene Eingangsgrößen)
+    input_cols = [
+        "row_index",
+        "model",
+        "backend",
+        "refrigerant",
+        "oil",
+        "success",
+        "error",
+        "p_suc_bar_in",
+        "T_suc_C_in",
+        "p_out_bar_in",
+        "T_amb_C_in",
+        "T_oil_sump_C_meas",
+        "N_rpm_in",
+        "f_oper_hz",
+        "n_rel",
+        "n_abs_hz",
+    ]
+
+    # States: alles was wie "<prefix>_p_bar", "<prefix>_T_C", "<prefix>_rho_kgpm3" heißt
+    # und in der Reihenfolge der Prefixe, die du oben auch ausgibst.
+    state_prefixes = ["st_in", "c1", "c3", "c4", "c5", "st_out"]
+    state_cols = []
+    for p in state_prefixes:
+        for suf in ["_p_bar", "_T_C", "_rho_kgpm3"]:
+            col = f"{p}{suf}"
+            if col in out_df.columns:
+                state_cols.append(col)
+
+    # Outputs: Modelloutputs + interne Größen
+    output_cols = [
+        "m_flow_kg_s",
+        "m_flow_g_s",
+        "P_el_W",
+        "T_wall_C",
+        "T_dis_C",
+        "m_dot_3_kg_s",
+        "W_dot_int_W",
+        "W_dot_loss_W",
+        "W_dot_int_plus_loss_W",
+        "W_dot_loss_share",
+    ]
+
+    # Errors / Measurements: Messwerte + Residuen
+    error_cols = [
+        "m_meas_g_s",
+        "e_m_rel",
+        "P_meas_W",
+        "e_P_rel",
+    ]
+
+    # Nur Spalten nehmen, die wirklich existieren (robust bei optionalen Spalten)
+    def _keep_existing(cols):
+        return [c for c in cols if c in out_df.columns]
+
+    ordered = (
+        _keep_existing(input_cols)
+        + _keep_existing(state_cols)
+        + _keep_existing(output_cols)
+        + _keep_existing(error_cols)
+    )
+
+    # Restliche Spalten (falls später was dazukommt), stabil hinten anhängen
+    remaining = [c for c in out_df.columns if c not in ordered]
+    out_df = out_df[ordered + remaining]
+
     out_df.to_csv(out_path, index=False)
 
     n_ok = int(out_df["success"].sum())

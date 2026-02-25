@@ -19,7 +19,7 @@
 #
 # Beispielaufruf (parallel):
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 50 --population 20
-#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 10 --population 20 --lsq_max_nfev 10000 --ind_timeout_s 30
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 20 --population 20 --lsq_max_nfev 20000 --ind_timeout_s 30
 #
 # Key design decisions:
 # - Compressor built ONCE per individual (not per data point).
@@ -544,7 +544,7 @@ def main():
             # penalize not done
             if not_done:
                 timed_out_indices = [futs[f] for f in not_done]
-                print(f"[WARN] Gesamt-Timeout: {len(not_done)} Individuen penalisiert -> Pool Neustart")
+                print(f"[WARN] Gesamt-Timeout: {len(not_done)} Individuen bestraft -> Pool Neustart")
 
                 # IMPORTANT on Windows: kill the stuck worker pool and recreate
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -610,7 +610,7 @@ def main():
             population = [population[i].copy() for i in range(elite_k)] + children
             errors     = eval_pop(population)
 
-            if gen % 25 == 0 or gen == 1:
+            if gen % 1 == 0 or gen == 1:
                 print(f"[GEN {gen:4d}] "
                       f"best_gen={float(np.min(errors)):.6e}  "
                       f"best_so_far={best_err:.6e}")

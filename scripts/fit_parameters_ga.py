@@ -19,7 +19,7 @@
 #
 # Beispielaufruf (parallel):
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 50 --population 20
-#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 20 --population 20 --lsq_max_nfev 20000 --ind_timeout_s 30
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 10 --seed 1 --n_jobs 10 --generations 50 --population 10 --lsq_max_nfev 20000 --ind_timeout_s 15
 #
 # Key design decisions:
 # - Compressor built ONCE per individual (not per data point).
@@ -562,6 +562,9 @@ def main():
         best_err = float(np.min(errors))
         print(f"[INIT] best_err={best_err:.6e}")
 
+        # --- best snapshots (printed every 50 generations) ---
+        best_snapshots: list[dict] = []
+
         for gen in range(1, args.generations + 1):
             # Sortieren
             order      = np.argsort(errors)
@@ -614,6 +617,14 @@ def main():
                 print(f"[GEN {gen:4d}] "
                       f"best_gen={float(np.min(errors)):.6e}  "
                       f"best_so_far={best_err:.6e}")
+
+            if gen % 10 == 0:
+                snap = {"gen": int(gen), "best_err_so_far": float(best_err)}
+                snap.update({name: float(val) for name, val in zip(PARAM_NAMES, best_x)})
+                best_snapshots.append(snap)
+
+                pretty = ", ".join([f"{k}={snap[k]:.6g}" for k in PARAM_NAMES])
+                print(f"[BEST @ GEN {gen:4d}] err={best_err:.6e} | {pretty}")
 
     finally:
         if executor is not None:
@@ -720,6 +731,12 @@ def main():
     out_pred   = out_dir / f"fit_predictions_{suffix}.csv"
     pd.DataFrame([fitted_row]).to_csv(out_params, index=False)
     pd.DataFrame(pred_rows).to_csv(out_pred,   index=False)
+
+    # --- Save best snapshots CSV ---
+    if best_snapshots:
+        out_snap = out_dir / f"best_params_snapshots_{suffix}.csv"
+        pd.DataFrame(best_snapshots).to_csv(out_snap, index=False)
+        print(f" Best-snapshots gespeichert: {out_snap}")
 
     print(f"\n=== GA FIT DONE ===")
     print(f"  Finaler Fehler (Trainingsdaten): {final_err:.6e}")

@@ -12,6 +12,11 @@
 #
 # Uses REFPROP backend via vclibpy.media.RefProp
 #
+# cd C:\Users\ahl-jgr\PycharmProjects\compressor-simulation
+# .venv\Scripts\activate
+# $env:RPPREFIX = "T:\ahl\REFPROP"
+#
+#
 # Beispielaufruf (seriell):
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv \
 #       --oil LPG68 --model original --refrigerant PROPANE \
@@ -19,7 +24,8 @@
 #
 # Beispielaufruf (parallel):
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 50 --population 20
-#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 10 --seed 1 --n_jobs 10 --generations 50 --population 10 --lsq_max_nfev 20000 --ind_timeout_s 15
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 20 --population 20 --lsq_max_nfev 20000 --ind_timeout_s 30
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --generations 50 --population 20 --n_jobs 20 --seed 1 --ind_timeout_s 30 --n_train 45 --lsq_max_nfev 20000
 #
 # Key design decisions:
 # - Compressor built ONCE per individual (not per data point).

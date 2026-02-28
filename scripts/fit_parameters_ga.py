@@ -25,7 +25,7 @@
 # Beispielaufruf (parallel):
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 50 --population 20
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 20 --population 20 --lsq_max_nfev 20000 --ind_timeout_s 30
-#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --generations 50 --population 20 --n_jobs 20 --seed 1 --ind_timeout_s 30 --n_train 45 --lsq_max_nfev 20000
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --generations 50 --population 20 --n_jobs 10 --seed 1 --ind_timeout_s 20 --n_train 10 --lsq_max_nfev 20000
 #
 # Key design decisions:
 # - Compressor built ONCE per individual (not per data point).
@@ -61,6 +61,35 @@ from vclibpy.components.compressors import (
 )
 from vclibpy.datamodels import FlowsheetState
 from vclibpy.media import RefProp
+
+import warnings
+import re
+
+def _short_refprop_warning(message: str) -> str:
+    s = str(message)
+
+    # Beispiel: "... Temperature above upper limit: T = 663.360 K, Tmax = 650.000 K."
+    m = re.search(r"Temperature above upper limit: T\s*=\s*([0-9.]+)\s*K,\s*Tmax\s*=\s*([0-9.]+)\s*K", s)
+    if m:
+        return f"RefProp: T>Tmax (T={m.group(1)}K, Tmax={m.group(2)}K)"
+
+    # Generischer Fallback: erste Zeile / gekürzt
+    first = s.splitlines()[0].strip()
+    return (first[:140] + "…") if len(first) > 140 else first
+
+
+def _warn_handler(message, category, filename, lineno, file=None, line=None):
+    msg = str(message)
+
+    # Nur RefProp-Warnungen kurz ausgeben (du kannst das Pattern anpassen)
+    if "ref_prop.py" in filename or "REFPROP" in msg or "PSFLSH" in msg or "PHFLSH" in msg:
+        print(_short_refprop_warning(msg))
+        return
+
+    # Alles andere normal
+    print(warnings.formatwarning(message, category, filename, lineno, line))
+
+warnings.showwarning = _warn_handler
 
 # -------------------------
 # CSV column defaults

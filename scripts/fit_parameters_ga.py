@@ -493,10 +493,10 @@ def main():
     vic_hi = args.vic_hi_scale * V_h_m3
     bounds = np.array([
         [2.0,   50.0  ],   # Ua_suc_ref
-        [5.0,   50.0  ],   # Ua_dis_ref
+        [5.0,   30.0  ],   # Ua_dis_ref
         [0.1,   3.0  ],   # Ua_amb
-        [5e-9,  1e-7  ],   # A_tot  (log-uniform)
-        [4e-6,  1e-4  ],   # A_dis  (log-uniform)
+        [7e-9,  5e-7  ],   # A_tot  (log-uniform)
+        [1e-6,  5e-4  ],   # A_dis  (log-uniform)
         [vic_lo, vic_hi],  # V_IC
         [0.10,   0.30  ],   # alpha_loss
         [20.0,  200.0  ],   # W_dot_loss_ref

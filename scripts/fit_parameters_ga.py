@@ -25,7 +25,7 @@
 # Beispielaufruf (parallel):
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 50 --population 20
 #   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --n_train 20 --seed 1 --n_jobs 10 --generations 20 --population 20 --lsq_max_nfev 20000 --ind_timeout_s 30
-#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --generations 50 --population 20 --n_jobs 10 --seed 1 --ind_timeout_s 20 --n_train 10 --lsq_max_nfev 20000
+#   python scripts/fit_parameters_ga.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE --generations 100 --population 20 --n_jobs 10 --ind_timeout_s 20 --n_train 10 --lsq_max_nfev 20000
 #
 # Key design decisions:
 # - Compressor built ONCE per individual (not per data point).
@@ -492,14 +492,14 @@ def main():
     vic_lo = args.vic_lo_scale * V_h_m3
     vic_hi = args.vic_hi_scale * V_h_m3
     bounds = np.array([
-        [2.0,   60.0  ],   # Ua_suc_ref
-        [5.0,   60.0  ],   # Ua_dis_ref
+        [2.0,   50.0  ],   # Ua_suc_ref
+        [5.0,   50.0  ],   # Ua_dis_ref
         [0.1,   3.0  ],   # Ua_amb
         [5e-9,  1e-7  ],   # A_tot  (log-uniform)
         [4e-6,  1e-4  ],   # A_dis  (log-uniform)
         [vic_lo, vic_hi],  # V_IC
-        [0.05,   0.35  ],   # alpha_loss
-        [0.0,  300.0  ],   # W_dot_loss_ref
+        [0.10,   0.30  ],   # alpha_loss
+        [20.0,  200.0  ],   # W_dot_loss_ref
     ], dtype=float)
 
     # --- Initialpopulation ---

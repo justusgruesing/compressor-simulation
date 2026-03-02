@@ -1,0 +1,2 @@
+Ua_suc_ref,Ua_dis_ref,Ua_amb,A_tot,A_dis,V_IC,alpha_loss,W_dot_loss_ref,f_ref,T_ref,m_dot_ref,m_dot_ref_definition,oil,refrigerant,model,error_sum_sq,n_train,n_points_total,use_Tdis,Tdis_norm_K,seed,population,elite_frac,random_keep_prob,mutation_prob_param,generations,n_jobs,log_uniform_params
+42.21697815875746,5.217941588676937,2.136522256828749,1.30430081359312e-07,0.00047836467403203836,3.07e-05,0.16,83.0,50.0,273.15,0.01588806183458139,"rho_sat(T=273.15K,Q=1)*V_h_geo*f_ref",LPG68,PROPANE,original,0.01680474088606398,10,61,True,50.0,1,40,0.2,0.1,0.3,100,20,"A_tot,A_dis"

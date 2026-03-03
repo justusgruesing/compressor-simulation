@@ -277,8 +277,8 @@ mathtext.default : regular ## The default font to use for math.
 axes.facecolor      : white   # axes background color
 axes.edgecolor      : 000000   # axes edge color
 axes.linewidth      : 0.5     # edge linewidth
-axes.grid           : False   # display grid or not
-#axes.grid.axis      : both    ## which axis the grid should apply to
+axes.grid           : True   # display grid or not
+axes.grid.axis      : both    ## which axis the grid should apply to
 #axes.grid.which     : major   ## gridlines at major, minor or both ticks
 #axes.titlelocation  : center  ## alignment of the title,
                                ## possible values are left, right and center

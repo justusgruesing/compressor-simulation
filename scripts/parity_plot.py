@@ -1,4 +1,8 @@
 # scripts/parity_plot.py
+#
+# example:
+# python scripts/parity_plot.py --pred_csv results/batch_lpg68_original_2026-03-04_132529.csv --color_by_superheat
+#
 import argparse
 from pathlib import Path
 from datetime import datetime

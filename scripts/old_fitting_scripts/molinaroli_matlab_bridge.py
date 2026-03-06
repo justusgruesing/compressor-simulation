@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -43,8 +44,15 @@ F_REF = 50.0
 T_REF = 273.15
 Q_REF = 1.0
 
-# Higher penalty for failed simulations (dimensionless relative error)
+# Penalty for failed simulations (dimensionless relative error)
 FAIL_E = 1e3
+
+# If True: treat RefProp "out of range" warnings as simulation failure
+TREAT_REFPROP_WARNINGS_AS_FAIL = True
+
+# (Optional) Smooth cap for extreme errors (keeps objective bounded and smooth)
+USE_SOFT_CAP = False
+E_CAP = 50.0  # typical: 10..100
 
 PARAM_NAMES = [
     "Ua_suc_ref",
@@ -107,6 +115,10 @@ def _x_to_params(x: np.ndarray) -> dict:
         p[name] = float(val)
     return p
 
+def _soft_cap(e: np.ndarray, cap: float) -> np.ndarray:
+    # smooth, differentiable cap
+    return cap * np.tanh(e / cap)
+
 @dataclass
 class Control:
     n: float  # relative speed 0..1
@@ -119,6 +131,10 @@ class SimpleInputs:
 def _clamp01(x: float) -> float:
     return max(1e-9, min(1.0, float(x)))
 
+def _refprop_warning_is_out_of_range(msg: str) -> bool:
+    m = msg.lower()
+    return ("out of range" in m) or ("temperature above upper limit" in m) or ("tmax" in m)
+
 def _simulate_with_comp(
     comp,
     med,
@@ -129,26 +145,38 @@ def _simulate_with_comp(
     n_rel: float,
     T_amb_K: float,
 ):
-    # Update inputs/state for this operating point
     inputs.control.n = _clamp01(n_rel)
     inputs.T_amb = float(T_amb_K)
 
-    comp.state_inlet = med.calc_state("PT", float(p_suc_pa), float(T_suc_K))
+    # Catch RefProp warnings during state calc / outlet calc
+    if TREAT_REFPROP_WARNINGS_AS_FAIL:
+        with warnings.catch_warnings(record=True) as wlist:
+            warnings.simplefilter("always")
 
-    fs_state = FlowsheetState()
-    comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
+            comp.state_inlet = med.calc_state("PT", float(p_suc_pa), float(T_suc_K))
+
+            fs_state = FlowsheetState()
+            comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
+
+            for w in wlist:
+                msg = str(w.message)
+                if _refprop_warning_is_out_of_range(msg):
+                    raise ValueError(f"RefProp out-of-range warning: {msg}")
+    else:
+        comp.state_inlet = med.calc_state("PT", float(p_suc_pa), float(T_suc_K))
+        fs_state = FlowsheetState()
+        comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
 
     m_flow = float(comp.m_flow)
     P_el = float(comp.P_el)
 
-    # Basic sanity checks
     if (not np.isfinite(m_flow)) or (not np.isfinite(P_el)) or (m_flow <= 0.0) or (P_el <= 0.0):
         raise ValueError("Non-finite or non-positive outputs.")
 
     return m_flow, P_el
 
 # -------------------------
-# Module cache (so MATLAB doesn't reload every call)
+# Module cache
 # -------------------------
 _CACHE = {
     "rows": None,
@@ -228,11 +256,9 @@ def init(
     if len(rows) == 0:
         raise ValueError("No valid rows after unit conversion/filtering.")
 
-    # RefProp backend
     try:
         med = RefProp(fluid_name=refrigerant)
     except TypeError:
-        # fallback if wrapper uses different argument name
         med = RefProp(refrigerant)
 
     _CACHE.update({
@@ -264,7 +290,6 @@ def cost(x_in) -> float:
 
     comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=params)
     comp.med_prop = med
-
     inputs = SimpleInputs(control=Control(n=1e-6), T_amb=298.15)
 
     e_m = np.empty(len(rows), dtype=float)
@@ -288,21 +313,22 @@ def cost(x_in) -> float:
             e_m[i] = FAIL_E
             e_W[i] = FAIL_E
 
-    # Molinaroli objective (eq. 31–33):
-    g = 0.5 * (float(np.mean(e_m**2)) + float(np.mean(e_W**2)))
-    return float(g)
+    # Optional: smooth cap extreme values (helps stability for blackbox fitting)
+    if USE_SOFT_CAP:
+        e_m = _soft_cap(e_m, E_CAP)
+        e_W = _soft_cap(e_W, E_CAP)
+
+    # Molinaroli objective (RMS form): g = sqrt(0.5*(mean(e_m^2)+mean(e_W^2)))
+    g2 = 0.5 * (float(np.mean(e_m**2)) + float(np.mean(e_W**2)))
+    g = float(np.sqrt(max(g2, 0.0)))
+    return g
 
 def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matlab", x0_in=None):
-    """
-    Save fitted parameter row and predictions.
-    If x0_in is provided, also store start parameters as x0_<name> columns.
-    """
     x = np.asarray(list(x_in), dtype=float).reshape(-1)
     if x.size != len(PARAM_NAMES):
         raise ValueError(f"x must have length {len(PARAM_NAMES)}")
     params = _x_to_params(x)
 
-    # optional start parameters
     x0 = None
     if x0_in is not None:
         try:
@@ -354,7 +380,6 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
             e_W = (P_calc / row["P_meas"]) - 1.0
             e_m_list.append(float(e_m))
             e_W_list.append(float(e_W))
-
         except Exception:
             ok = False
             n_fail += 1
@@ -362,7 +387,6 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
             P_calc = float("nan")
             e_m = float("nan")
             e_W = float("nan")
-            # for objective calculation, mimic cost(): use FAIL_E
             e_m_list.append(float(FAIL_E))
             e_W_list.append(float(FAIL_E))
 
@@ -384,7 +408,13 @@ def save_results(x_in, out_params_csv: str, out_pred_csv: str, tag: str = "matla
 
     e_m_arr = np.asarray(e_m_list, dtype=float)
     e_W_arr = np.asarray(e_W_list, dtype=float)
-    cost_g = 0.5 * (float(np.mean(e_m_arr**2)) + float(np.mean(e_W_arr**2)))
+
+    if USE_SOFT_CAP:
+        e_m_arr = _soft_cap(e_m_arr, E_CAP)
+        e_W_arr = _soft_cap(e_W_arr, E_CAP)
+
+    g2 = 0.5 * (float(np.mean(e_m_arr**2)) + float(np.mean(e_W_arr**2)))
+    cost_g = float(np.sqrt(max(g2, 0.0)))
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     fitted_row = {k: float(params[k]) for k in PARAM_NAMES}

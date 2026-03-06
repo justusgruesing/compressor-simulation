@@ -323,11 +323,11 @@ def main():
             y_calc=df[calc].to_numpy(dtype=float),
             band=args.band,
             title="Parity Plot: Massenstrom",
-            x_label=f"{meas} [g/s]",
-            y_label=f"{calc} [g/s]",
+            x_label="ṁ gemessen [g/s]",
+            y_label="ṁ berechnet [g/s]",
             out_path=out_dir / f"parity_m_dot_{stamp}.png",
             color_values=color_vals,
-            color_label="Überhitzung [°C]",
+            color_label="Überhitzung [K]",
             cmap=args.cmap,
             cmin=args.cmin,
             cmax=args.cmax,
@@ -347,11 +347,11 @@ def main():
             y_calc=df[calc].to_numpy(dtype=float),
             band=args.band,
             title="Parity Plot: Elektrische Leistung",
-            x_label=f"{meas} [W]",
-            y_label=f"{calc} [W]",
+            x_label="Pel gemessen[W]",
+            y_label="Pel berechnet [W]",
             out_path=out_dir / f"parity_P_el_{stamp}.png",
             color_values=color_vals,
-            color_label="Überhitzung [°C]",
+            color_label="Überhitzung [K]",
             cmap=args.cmap,
             cmin=args.cmin,
             cmax=args.cmax,
@@ -366,16 +366,23 @@ def main():
 
     if t_pair is not None:
         meas, calc = t_pair
+
+        xC = df[meas].to_numpy(dtype=float)
+        yC = df[calc].to_numpy(dtype=float)
+
+        xK = xC + 273.15
+        yK = yC + 273.15
+
         stats = parity_plot_abs_band(
-            x_meas=df[meas].to_numpy(dtype=float),
-            y_calc=df[calc].to_numpy(dtype=float),
-            band_abs=args.band_T_dis_abs,
+            x_meas=xK,
+            y_calc=yK,
+            band_abs=args.band_T_dis_abs,  # numerisch gleich: 3 K == 3 °C
             title="Parity Plot: Austrittstemperatur",
-            x_label=f"{meas} [°C]",
-            y_label=f"{calc} [°C]",
+            x_label="Austrittstemperatur gemessen [K]",
+            y_label="Austrittstemperatur berechnet [K]",
             out_path=out_dir / f"parity_T_dis_{stamp}.png",
             color_values=color_vals,
-            color_label="Überhitzung [°C]",
+            color_label="Überhitzung [K]",
             cmap=args.cmap,
             cmin=args.cmin,
             cmax=args.cmax,
@@ -384,7 +391,7 @@ def main():
         stats.update({"metric": "T_dis", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
         generated_any = True
-        print(f"[OK] T_dis plot: {meas} vs {calc}")
+        print(f"[OK] T_dis plot: {meas} vs {calc} (plotted in K)")
     else:
         print("[SKIP] T_dis plot: keine passenden Spalten gefunden (keine Mess-/Calc-Paarung).")
 

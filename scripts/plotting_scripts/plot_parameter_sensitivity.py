@@ -3,6 +3,7 @@
 # python scripts/plot_parameter_sensitivity.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --params_csv results/ga_fit/fitted_params_lpg68_original_ga_2026-03-04_121512.csv
 
 import argparse
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
@@ -26,7 +27,7 @@ P_SUC_COL = "P1_mean"            # bar
 T_SUC_COL = "T1_mean"            # °C
 P_OUT_COL = "P2_mean"            # bar
 T_AMB_COL = "Tamb_mean"          # °C
-T_DIS_MEAS_COL = "T2_mean"       # °C
+T_DIS_MEAS_COL = "T2_mean"       # °C (gemessene Austrittstemp.)
 
 M_FLOW_MEAS_COL = "suction_mf_mean"   # g/s
 P_EL_MEAS_COL = "Pel_mean"            # W
@@ -36,7 +37,7 @@ SPEED_COL = "N"  # rpm
 F_REF = 50.0
 T_REF = 273.15
 Q_REF = 1.0
-T_DIS_NORM_K = 50.0  # James objective normalization (Eq. 40) :contentReference[oaicite:3]{index=3}
+T_DIS_NORM_K = 50.0  # James objective normalization (Eq. 40)
 
 PARAM_NAMES = [
     "Ua_suc_ref",
@@ -123,6 +124,10 @@ def compute_m_dot_ref(med: RefProp, V_h_m3: float) -> float:
     return float(st.d) * V_h_m3 * F_REF
 
 def simulate_point(med, model, params, N_max_hz, V_h_m3, p_suc_pa, T_suc_K, p_out_pa, f_oper_hz, T_amb_K):
+    """
+    Returns:
+      m_flow [kg/s], P_el [W], T_dis [K], n_warn (count of captured warnings)
+    """
     n_rel = max(1e-6, min(1.0, f_oper_hz / N_max_hz))
 
     p = dict(params)
@@ -131,16 +136,23 @@ def simulate_point(med, model, params, N_max_hz, V_h_m3, p_suc_pa, T_suc_K, p_ou
 
     comp = make_compressor(model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, params=p)
     comp.med_prop = med
-    comp.state_inlet = med.calc_state("PT", p_suc_pa, T_suc_K)
 
-    inputs = SimpleInputs(control=Control(n=n_rel), T_amb=T_amb_K)
-    fs_state = FlowsheetState()
-    comp.calc_state_outlet(p_outlet=p_out_pa, inputs=inputs, fs_state=fs_state)
+    # Capture warnings (e.g. RefProp warnings) without spamming console
+    with warnings.catch_warnings(record=True) as wrec:
+        warnings.simplefilter("always")
+
+        comp.state_inlet = med.calc_state("PT", p_suc_pa, T_suc_K)
+
+        inputs = SimpleInputs(control=Control(n=n_rel), T_amb=T_amb_K)
+        fs_state = FlowsheetState()
+        comp.calc_state_outlet(p_outlet=p_out_pa, inputs=inputs, fs_state=fs_state)
+
+    n_warn = len(wrec)
 
     if not hasattr(comp, "state_outlet") or comp.state_outlet is None or not hasattr(comp.state_outlet, "T"):
         raise RuntimeError("No valid discharge temperature available (comp.state_outlet.T missing).")
 
-    return float(comp.m_flow), float(comp.P_el), float(comp.state_outlet.T)
+    return float(comp.m_flow), float(comp.P_el), float(comp.state_outlet.T), int(n_warn)
 
 def build_rows(df: pd.DataFrame):
     required = [
@@ -169,19 +181,33 @@ def build_rows(df: pd.DataFrame):
         })
     return rows
 
-def objective_g(rows, med, model, params, N_max_hz, V_h_m3, fail_penalty=10.0) -> float:
+def objective_g(rows, med, model, params, N_max_hz, V_h_m3, fail_penalty=10.0):
+    """
+    James-style objective:
+      g = (1/n) * sum( e_m^2 + e_W^2 + e_T^2 )
+      e_m = m_calc/m_meas - 1
+      e_W = W_calc/W_meas - 1
+      e_T = (T_dis_calc - T_dis_meas)/T_DIS_NORM_K
+
+    Returns:
+      g, n_fail, n_total, n_warn_total
+    """
     em2 = 0.0
     eW2 = 0.0
     eT2 = 0.0
+    n_fail = 0
+    n_warn_total = 0
     n = 0
 
     for row in rows:
         try:
-            m_calc, P_calc, T_dis_calc_K = simulate_point(
+            m_calc, P_calc, T_dis_calc_K, n_warn = simulate_point(
                 med, model, params, N_max_hz, V_h_m3,
                 row["p_suc_pa"], row["T_suc_K"], row["p_out_pa"],
                 row["f_oper_hz"], row["T_amb_K"],
             )
+            n_warn_total += int(n_warn)
+
             em = (m_calc / row["m_meas"]) - 1.0
             eW = (P_calc / row["P_meas"]) - 1.0
             eT = (T_dis_calc_K - row["T_dis_meas_K"]) / T_DIS_NORM_K
@@ -190,14 +216,17 @@ def objective_g(rows, med, model, params, N_max_hz, V_h_m3, fail_penalty=10.0) -
             eW2 += eW * eW
             eT2 += eT * eT
         except Exception:
+            n_fail += 1
             em2 += fail_penalty * fail_penalty
             eW2 += fail_penalty * fail_penalty
             eT2 += fail_penalty * fail_penalty
         n += 1
 
     if n == 0:
-        return float("inf")
-    return float((em2 + eW2 + eT2) / n)
+        return float("inf"), 0, 0, 0
+
+    g = float((em2 + eW2 + eT2) / n)
+    return g, int(n_fail), int(n), int(n_warn_total)
 
 def main():
     ap = argparse.ArgumentParser(description="Create parameter sensitivity curves (James objective) like Fig. 9.")
@@ -216,6 +245,13 @@ def main():
 
     ap.add_argument("--out_dir", default="results/sensitivity", help="Output folder for png/csv")
     ap.add_argument("--fail_penalty", type=float, default=10.0)
+
+    # NEW: keep plot clean
+    ap.add_argument(
+        "--mask_if_fails",
+        action="store_true",
+        help="If set: g_norm becomes NaN for ratio points where n_fail>0 (recommended for clean plots).",
+    )
 
     args = ap.parse_args()
 
@@ -239,10 +275,17 @@ def main():
 
     ratios = np.linspace(args.r_min, args.r_max, args.n_points)
 
-    # Baseline/min objective at identified parameters
-    g_min = objective_g(rows, med, args.model, params_base, N_max_hz, V_h_m3, fail_penalty=args.fail_penalty)
+    # Baseline objective at identified parameters
+    g_min, fail_min, n_tot, warn_min = objective_g(
+        rows, med, args.model, params_base, N_max_hz, V_h_m3, fail_penalty=args.fail_penalty
+    )
     if not np.isfinite(g_min) or g_min <= 0:
         raise RuntimeError(f"Ungültiges g_min={g_min}. Prüfe Modellstabilität / Daten / Parameter.")
+
+    if fail_min > 0:
+        print(f"[WARN] Baseline enthält Penalties: {fail_min}/{n_tot} fails -> Normierung kann verfälscht sein.")
+    if warn_min > 0:
+        print(f"[INFO] Baseline RefProp-Warnungen (gezählt, nicht bestraft): {warn_min} total")
 
     records = []
     fig, ax = plt.subplots()
@@ -250,17 +293,30 @@ def main():
     for pname in PARAM_NAMES:
         p0 = float(params_base[pname])
         y = []
+
         for r in ratios:
             p = dict(params_base)
             p[pname] = p0 * float(r)
-            g = objective_g(rows, med, args.model, p, N_max_hz, V_h_m3, fail_penalty=args.fail_penalty)
-            y.append(g / g_min if np.isfinite(g) else np.nan)
+
+            g, n_fail, n_total, n_warn = objective_g(
+                rows, med, args.model, p, N_max_hz, V_h_m3, fail_penalty=args.fail_penalty
+            )
+
+            if args.mask_if_fails and n_fail > 0:
+                g_norm = np.nan
+            else:
+                g_norm = (g / g_min) if np.isfinite(g) else np.nan
+
+            y.append(g_norm)
 
             records.append({
                 "param": pname,
                 "ratio": float(r),
-                "g": float(g),
-                "g_norm": float(g / g_min) if np.isfinite(g) else np.nan,
+                "g": float(g) if np.isfinite(g) else np.nan,
+                "g_norm": float(g_norm) if np.isfinite(g_norm) else np.nan,
+                "n_fail": int(n_fail),
+                "n_warn": int(n_warn),
+                "n_total": int(n_total),
             })
 
         ax.plot(ratios, y, marker="o", label=pname)
@@ -281,6 +337,8 @@ def main():
 
     print("Saved plot:", out_png)
     print("Saved data:", out_csv)
+    if args.mask_if_fails:
+        print("[INFO] mask_if_fails aktiv: Punkte mit n_fail>0 wurden im Plot als NaN maskiert (kein Penalty-Bias).")
 
 if __name__ == "__main__":
     main()

@@ -499,7 +499,7 @@ def main():
         [4e-6,  5e-4  ],   # A_dis  (log-uniform)
         [vic_lo, vic_hi],  # V_IC
         [0.10,   0.30  ],   # alpha_loss
-        [20.0,  175.0  ],   # W_dot_loss_ref
+        [40.0,  175.0  ],   # W_dot_loss_ref
     ], dtype=float)
 
     # --- Initialpopulation ---

@@ -1,4 +1,4 @@
-﻿LPG100/LPG68;R290 (Propan);in Pa;in ℃;in Pa;in ℃;in ℃;in ℃;in kg/s;in W;in 1/min;in mPas
+﻿LPG100/LPG68;R290 (Propan);in bar;in ℃;in bar;in ℃;in ℃;in ℃;in g/s;in W;in 1/min;in mPas
 Ölbezeichnung;Kältemittel;P1_mean;T1_mean;P2_mean;Tamb_mean;T2_mean;T7_mean;suction_mf_mean;Pel_mean;N;dyn_viscosity_mean
 LPG100;R290;4,71028;10,2428;21,268;28,5408;84,6276;77,4386;15,8592;1885,59;3608,9;5,70122
 LPG100;R290;5,48294;14,5305;21,2279;29,0013;81,787;75,3122;18,7327;1918,58;3608,9;5,57295

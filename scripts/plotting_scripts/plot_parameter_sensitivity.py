@@ -1,6 +1,6 @@
 # scripts/plot_parameter_sensitivity.py
 # run script example:
-# python scripts/plot_parameter_sensitivity.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --params_csv results/ga_fit/fitted_params_lpg68_original_ga_2026-03-04_121512.csv
+# python scripts/plotting_scripts/plot_parameter_sensitivity.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --params_csv results/final_results/Molinaroli_LPG68/fitted_params_lpg68_original_ga_2026-03-08_101308.csv
 
 import argparse
 import warnings
@@ -246,7 +246,6 @@ def main():
     ap.add_argument("--out_dir", default="results/sensitivity", help="Output folder for png/csv")
     ap.add_argument("--fail_penalty", type=float, default=10.0)
 
-    # NEW: keep plot clean
     ap.add_argument(
         "--mask_if_fails",
         action="store_true",
@@ -267,7 +266,16 @@ def main():
     if not rows:
         raise ValueError("Keine gültigen Datenzeilen nach Filter/Validierung gefunden.")
 
-    params_base = load_params_csv(Path(args.params_csv))
+    params_csv_path = Path(args.params_csv)
+    params_base = load_params_csv(params_csv_path)
+
+    # ---- NEW: meta columns for output CSV ----
+    meta = {
+        "params_csv_name": params_csv_path.name,
+        "params_csv_path": str(params_csv_path),
+    }
+    # Base parameters used for the sweep
+    meta.update({f"base_{k}": float(params_base[k]) for k in PARAM_NAMES})
 
     N_max_hz = rpm_to_hz(args.N_max_rpm)
     V_h_m3 = float(args.V_h_cm3) * 1e-6
@@ -281,6 +289,14 @@ def main():
     )
     if not np.isfinite(g_min) or g_min <= 0:
         raise RuntimeError(f"Ungültiges g_min={g_min}. Prüfe Modellstabilität / Daten / Parameter.")
+
+    # Also store baseline stats in output CSV for traceability
+    meta.update({
+        "g_min": float(g_min),
+        "fail_min": int(fail_min),
+        "n_total": int(n_tot),
+        "warn_min": int(warn_min),
+    })
 
     if fail_min > 0:
         print(f"[WARN] Baseline enthält Penalties: {fail_min}/{n_tot} fails -> Normierung kann verfälscht sein.")
@@ -309,15 +325,17 @@ def main():
 
             y.append(g_norm)
 
-            records.append({
+            rec = {
+                **meta,  # <-- NEW: adds params_csv + base params + baseline stats to every row
                 "param": pname,
                 "ratio": float(r),
                 "g": float(g) if np.isfinite(g) else np.nan,
                 "g_norm": float(g_norm) if np.isfinite(g_norm) else np.nan,
                 "n_fail": int(n_fail),
                 "n_warn": int(n_warn),
-                "n_total": int(n_total),
-            })
+                "n_total_local": int(n_total),  # local (same as n_total, but explicit per run)
+            }
+            records.append(rec)
 
         ax.plot(ratios, y, marker="o", label=pname)
 

@@ -18,8 +18,8 @@
 #     - operating_map_<oil>_<refrigerant>_<timestamp>.csv
 #
 # Example:
-#   python scripts/operating_points_map.py --csv data/Datensatz_Fitting_1.csv --refrigerant PROPANE --oil LPG68
-#   python scripts/operating_points_map.py --oil LPG100 --csv data/Datensatz_Fitting_2.csv --xlim (-5, 30) --ylim (25, 65)
+#   python scripts/plotting_scripts/operating_points_map.py --csv data/Datensatz_Fitting_1.csv --refrigerant PROPANE --oil LPG68
+#   python scripts/plotting_scripts/operating_points_map.py --oil LPG100 --csv data/Datensatz_Fitting_3.csv --xlim (-5, 30) --ylim (25, 65)
 #
 import argparse
 import logging

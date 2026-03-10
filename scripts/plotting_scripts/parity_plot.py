@@ -1,7 +1,7 @@
-# scripts/parity_plot.py
+# scripts/plotting_scripts/parity_plot.py
 #
 # example:
-# python scripts/parity_plot.py --pred_csv results/batch_lpg68_original_2026-03-04_132529.csv --color_by_superheat
+# python scripts/plotting_scripts/parity_plot.py --pred_csv results/batch_all_original_2026-03-10_172526.csv --color_by_superheat --out_format svg
 #
 import argparse
 from pathlib import Path
@@ -139,7 +139,7 @@ def parity_plot_rel_band(
 
     ax.legend(loc="lower right", frameon=True)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path, format=out_path.suffix.lstrip("."))
     plt.close(fig)
 
     return {"n_total": n_total, "n_outside": n_out, "frac_outside": frac_out}
@@ -248,7 +248,7 @@ def parity_plot_abs_band(
     ax.legend(loc="lower right", frameon=True)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path, format=out_path.suffix.lstrip("."))
     plt.close(fig)
 
     return {"n_total": n_total, "n_outside": n_out, "frac_outside": frac_out}
@@ -276,6 +276,13 @@ def main():
     ap.add_argument("--cmax", type=float, default=None, help="Optional: fixed max for color scale (superheat_C)")
     ap.add_argument("--cmap", default="viridis", help="Matplotlib colormap name (default: viridis)")
     ap.add_argument("--point_size", type=int, default=None, help="Optional: scatter point size (overrides style)")
+
+    ap.add_argument(
+        "--out_format",
+        choices=["png", "svg"],
+        default="png",
+        help="Output format for plots (png or svg)"
+    )
 
     args = ap.parse_args()
 
@@ -325,7 +332,7 @@ def main():
             title="Parity Plot: Massenstrom",
             x_label="ṁ gemessen [g/s]",
             y_label="ṁ berechnet [g/s]",
-            out_path=out_dir / f"parity_m_dot_{stamp}.png",
+            out_path=out_dir / f"parity_m_dot_{stamp}.{args.out_format}",
             color_values=color_vals,
             color_label="Überhitzung [K]",
             cmap=args.cmap,
@@ -349,7 +356,7 @@ def main():
             title="Parity Plot: Elektrische Leistung",
             x_label="Pel gemessen[W]",
             y_label="Pel berechnet [W]",
-            out_path=out_dir / f"parity_P_el_{stamp}.png",
+            out_path=out_dir / f"parity_P_el_{stamp}.{args.out_format}",
             color_values=color_vals,
             color_label="Überhitzung [K]",
             cmap=args.cmap,
@@ -380,7 +387,7 @@ def main():
             title="Parity Plot: Austrittstemperatur",
             x_label="Austrittstemperatur gemessen [K]",
             y_label="Austrittstemperatur berechnet [K]",
-            out_path=out_dir / f"parity_T_dis_{stamp}.png",
+            out_path=out_dir / f"parity_T_dis_{stamp}.{args.out_format}",
             color_values=color_vals,
             color_label="Überhitzung [K]",
             cmap=args.cmap,

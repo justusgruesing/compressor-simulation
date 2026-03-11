@@ -1,7 +1,7 @@
 # scripts/plotting_scripts/parity_plot.py
 #
 # example:
-# python scripts/plotting_scripts/parity_plot.py --pred_csv results/batch_all_original_2026-03-10_172526.csv --color_by_superheat --out_format svg
+# python scripts/plotting_scripts/parity_plot.py --pred_csv results/batch_lpg68_original_2026-03-10_163802.csv --color_by_superheat --out_format svg
 #
 import argparse
 from pathlib import Path
@@ -79,7 +79,7 @@ def parity_plot_rel_band(
     lo = xy_min - pad
     hi = xy_max + pad
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(8, 8))
 
     # Reference lines
     xx = np.linspace(lo, hi, 200)
@@ -91,27 +91,43 @@ def parity_plot_rel_band(
     s = point_size
 
     if c is None:
-        ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{int(band*100)}%")
-        ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{int(band*100)}% (n={n_out})")
+        ax.scatter(
+            x[~outside], y[~outside],
+            s=s, alpha=0.85, marker="o",
+            label=f"innerhalb ±{int(band * 100)}%"
+        )
+        ax.scatter(
+            x[outside], y[outside],
+            s=s, alpha=0.95, marker="s", linewidths=0.9,
+            label=f"außerhalb ±{int(band * 100)}% (n={n_out})"
+        )
     else:
         vmin = float(np.nanmin(c)) if cmin is None else float(cmin)
         vmax = float(np.nanmax(c)) if cmax is None else float(cmax)
 
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-            ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{int(band*100)}%")
-            ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{int(band*100)}% (n={n_out})")
+            ax.scatter(
+                x[~outside], y[~outside],
+                s=s, alpha=0.85, marker="o",
+                label=f"innerhalb ±{int(band * 100)}%"
+            )
+            ax.scatter(
+                x[outside], y[outside],
+                s=s, alpha=0.95, marker="s", linewidths=0.9,
+                label=f"außerhalb ±{int(band * 100)}% (n={n_out})"
+            )
         else:
             sc_in = ax.scatter(
                 x[~outside], y[~outside],
                 c=c[~outside], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=s, alpha=0.90, edgecolors="none",
-                label=f"innerhalb ±{int(band*100)}%",
+                s=s, alpha=0.90, marker="o", edgecolors="none",
+                label=f"innerhalb ±{int(band * 100)}%",
             )
             ax.scatter(
                 x[outside], y[outside],
                 c=c[outside], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=s, alpha=0.98, edgecolors="black", linewidths=0.6,
-                label=f"außerhalb ±{int(band*100)}% (n={n_out})",
+                s=s, alpha=0.98, marker="s", linewidths=0.9,
+                label=f"außerhalb ±{int(band * 100)}% (n={n_out})",
             )
             cbar = fig.colorbar(sc_in, ax=ax, pad=0.02)
             cbar.set_label(color_label)
@@ -190,38 +206,54 @@ def parity_plot_abs_band(
     lo = xy_min - pad
     hi = xy_max + pad
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(8, 8))
 
     xx = np.linspace(lo, hi, 200)
     ax.plot(xx, xx, linewidth=1.4, label="_nolegend_")
     band_color = "0.5"
     ax.plot(xx, xx + band_abs, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
-    ax.plot(xx, xx - band_abs, linestyle="--", linewidth=1.2, color=band_color, label=f"±{band_abs:.0f}°C")
+    ax.plot(xx, xx - band_abs, linestyle="--", linewidth=1.2, color=band_color, label=f"±{band_abs:.0f} K")
 
     s = point_size
 
     if c is None:
-        ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{band_abs:.0f}°C")
-        ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{band_abs:.0f}°C (n={n_out})")
+        ax.scatter(
+            x[~outside], y[~outside],
+            s=s, alpha=0.85, marker="o",
+            label=f"innerhalb ±{band_abs:.0f} K"
+        )
+        ax.scatter(
+            x[outside], y[outside],
+            s=s, alpha=0.95, marker="s", linewidths=0.9,
+            label=f"außerhalb ±{band_abs:.0f} K (n={n_out})"
+        )
     else:
         vmin = float(np.nanmin(c)) if cmin is None else float(cmin)
         vmax = float(np.nanmax(c)) if cmax is None else float(cmax)
 
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-            ax.scatter(x[~outside], y[~outside], s=s, alpha=0.85, label=f"innerhalb ±{band_abs:.0f}°C")
-            ax.scatter(x[outside], y[outside], s=s, alpha=0.95, label=f"außerhalb ±{band_abs:.0f}°C (n={n_out})")
+            ax.scatter(
+                x[~outside], y[~outside],
+                s=s, alpha=0.85, marker="o",
+                label=f"innerhalb ±{band_abs:.0f} K"
+            )
+            ax.scatter(
+                x[outside], y[outside],
+                s=s, alpha=0.95, marker="s", linewidths=0.9,
+                label=f"außerhalb ±{band_abs:.0f} K (n={n_out})"
+            )
         else:
             sc_in = ax.scatter(
                 x[~outside], y[~outside],
                 c=c[~outside], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=s, alpha=0.90, edgecolors="none",
-                label=f"innerhalb ±{band_abs:.0f}°C",
+                s=s, alpha=0.90, marker="o", edgecolors="none",
+                label=f"innerhalb ±{band_abs:.0f} K",
             )
             ax.scatter(
                 x[outside], y[outside],
                 c=c[outside], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=s, alpha=0.98, edgecolors="black", linewidths=0.6,
-                label=f"außerhalb ±{band_abs:.0f}°C (n={n_out})",
+                s=s, alpha=0.98, marker="s", linewidths=0.9,
+                label=f"außerhalb ±{band_abs:.0f} K (n={n_out})",
             )
             cbar = fig.colorbar(sc_in, ax=ax, pad=0.02)
             cbar.set_label(color_label)
@@ -229,8 +261,8 @@ def parity_plot_abs_band(
     ax.set_title(title)
 
     info_txt = (
-        f"Außerhalb ±{band_abs:.0f}°C: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
-        f"Fehlerspanne: {float(np.min(diff)):.2f}°C bis {float(np.max(diff)):.2f}°C"
+        f"Außerhalb ±{band_abs:.0f} K: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
+        f"Fehlerspanne: {float(np.min(diff)):.2f} K bis {float(np.max(diff)):.2f} K"
     )
     ax.text(
         0.02, 0.98, info_txt,
@@ -330,11 +362,11 @@ def main():
             y_calc=df[calc].to_numpy(dtype=float),
             band=args.band,
             title="Parity Plot: Massenstrom",
-            x_label="ṁ gemessen [g/s]",
-            y_label="ṁ berechnet [g/s]",
+            x_label="ṁ gemessen in g/s",
+            y_label="ṁ berechnet in g/s",
             out_path=out_dir / f"parity_m_dot_{stamp}.{args.out_format}",
             color_values=color_vals,
-            color_label="Überhitzung [K]",
+            color_label="Überhitzung in K",
             cmap=args.cmap,
             cmin=args.cmin,
             cmax=args.cmax,
@@ -354,11 +386,11 @@ def main():
             y_calc=df[calc].to_numpy(dtype=float),
             band=args.band,
             title="Parity Plot: Elektrische Leistung",
-            x_label="Pel gemessen[W]",
-            y_label="Pel berechnet [W]",
+            x_label="Pel gemessen in W",
+            y_label="Pel berechnet in W",
             out_path=out_dir / f"parity_P_el_{stamp}.{args.out_format}",
             color_values=color_vals,
-            color_label="Überhitzung [K]",
+            color_label="Überhitzung in K",
             cmap=args.cmap,
             cmin=args.cmin,
             cmax=args.cmax,
@@ -377,19 +409,16 @@ def main():
         xC = df[meas].to_numpy(dtype=float)
         yC = df[calc].to_numpy(dtype=float)
 
-        xK = xC + 273.15
-        yK = yC + 273.15
-
         stats = parity_plot_abs_band(
-            x_meas=xK,
-            y_calc=yK,
+            x_meas=xC,
+            y_calc=yC,
             band_abs=args.band_T_dis_abs,  # numerisch gleich: 3 K == 3 °C
             title="Parity Plot: Austrittstemperatur",
-            x_label="Austrittstemperatur gemessen [K]",
-            y_label="Austrittstemperatur berechnet [K]",
+            x_label="Austrittstemperatur gemessen in °C",
+            y_label="Austrittstemperatur berechnet in °C",
             out_path=out_dir / f"parity_T_dis_{stamp}.{args.out_format}",
             color_values=color_vals,
-            color_label="Überhitzung [K]",
+            color_label="Überhitzung in K",
             cmap=args.cmap,
             cmin=args.cmin,
             cmax=args.cmax,
@@ -398,7 +427,7 @@ def main():
         stats.update({"metric": "T_dis", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
         generated_any = True
-        print(f"[OK] T_dis plot: {meas} vs {calc} (plotted in K)")
+        print(f"[OK] T_dis plot: {meas} vs {calc} (axes in °C, deviation band in K)")
     else:
         print("[SKIP] T_dis plot: keine passenden Spalten gefunden (keine Mess-/Calc-Paarung).")
 

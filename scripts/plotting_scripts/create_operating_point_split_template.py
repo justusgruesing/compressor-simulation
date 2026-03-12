@@ -7,8 +7,6 @@
 #       Drehzahl, T1_SH, T_evap, T_cond
 # - Daraus wird eine eindeutige op_id erzeugt.
 # - Für jeden Betriebspunkt wird ausgewertet, ob LPG68 und/oder LPG100 vorhanden sind.
-# - Es wird KEINE Toleranzlogik mehr verwendet.
-# - Es wird KEIN RefProp und KEIN Plot mehr benötigt.
 #
 # Outputs:
 #   1) operating_points_rows_<timestamp>.csv

@@ -370,8 +370,8 @@ def main():
             )
 
     # Labels
-    ax.set_xlabel("Evaporationstemperatur $T_{evap}$ [°C]")
-    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ [°C]")
+    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ in °C")
+    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ in °C")
 
     if args.title is None:
         if split_path is None:
@@ -450,7 +450,7 @@ def main():
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, pad=0.02)
-    cbar.set_label("Überhitzung am Eintritt [°C]")
+    cbar.set_label("Überhitzung am Eintritt in K")
 
     # Save
     stamp = _ts()

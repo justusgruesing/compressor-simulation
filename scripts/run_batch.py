@@ -18,7 +18,7 @@ from vclibpy.components.compressors import (
 #
 # Beispielaufrufe:
 # python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE
-# python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model modified --refrigerant PROPANE
+# python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model modified --refrigerant PROPANE --params_csv data/start_params_modified.csv
 # python scripts/run_batch.py --csv data/Datensatz_Fitting_2.csv --oil all --model modified --refrigerant PROPANE --params_csv results/final_results/Molinaroli_LPG68/fitted_params_lpg68_original_ga_2026-03-08_101308.csv
 
 # =========================

@@ -14,21 +14,21 @@
 # 2) Fill split_role in the template, e.g.:
 #       train
 #       validation
-#       unused   (or blank)
 # 3) Run this script with those two CSV files
 #
-# Examples:
-#   python scripts/fit_molinaroli_ga.py ^
-#       --op_rows_csv results/operating_points/operating_points_rows.csv ^
-#       --split_csv results/operating_points/operating_points_split_template.csv ^
-#       --oil LPG68 --model original --refrigerant PROPANE ^
-#       --population 20 --generations 50 --n_jobs 10
+# activate Refprop:
+# cd C:\Users\ahl-jgr\PycharmProjects\compressor-simulation
+# .venv\Scripts\activate
+# $env:RPPREFIX = "T:\ahl\REFPROP"
 #
-#   python scripts/fit_molinaroli_ga.py ^
-#       --op_rows_csv results/operating_points/operating_points_rows.csv ^
-#       --split_csv results/operating_points/operating_points_split_template.csv ^
-#       --oil all --model modified --refrigerant PROPANE ^
-#       --population 20 --generations 100 --n_jobs 10
+# limiting Threads:
+# $env:OPENBLAS_NUM_THREADS = "1"
+# $env:MKL_NUM_THREADS = "1"
+# $env:OMP_NUM_THREADS = "1"
+#
+# Examples:
+#   python scripts/fit_molinaroli_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil all --model original --refrigerant PROPANE --population 80 --generations 250 --n_jobs 40 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
+#
 #
 from __future__ import annotations
 

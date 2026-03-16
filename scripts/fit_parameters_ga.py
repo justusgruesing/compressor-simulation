@@ -758,17 +758,37 @@ def build_bounds(model: str, V_h_m3: float, vic_lo_scale: float, vic_hi_scale: f
     vic_lo = float(vic_lo_scale) * V_h_m3
     vic_hi = float(vic_hi_scale) * V_h_m3
 
-    by_name = {
-        "Ua_suc_ref": (2.0, 55.0),
-        "Ua_dis_ref": (2.0, 50.0),
-        "Ua_amb": (0.1, 3.0),
-        "A_tot": (7e-9, 5e-7),
-        "A_dis": (4e-6, 5e-4),
-        "V_IC": (vic_lo, vic_hi),
-        "alpha_loss": (0.10, 0.30),
-        "W_dot_loss_ref": (0.0, 175.0),
-        "alpha_fric_tot": (0.0, 400.0),
-    }
+    m = str(model).lower().strip()
+
+    if m in ("orig", "original"):
+        by_name = {
+            "Ua_suc_ref": (8.0, 55.0),
+            "Ua_dis_ref": (2.0, 20.0),
+            "Ua_amb": (0.1, 3.0),
+            "A_tot": (7e-9, 5e-7),
+            "A_dis": (4e-6, 5e-4),
+            "V_IC": (vic_lo, vic_hi),
+            "alpha_loss": (0.10, 0.30),
+            "W_dot_loss_ref": (40.0, 175.0),
+        }
+    elif m in ("mod", "modified"):
+        by_name = {
+            "Ua_suc_ref": (8.0, 55.0),
+            "Ua_dis_ref": (2.0, 20.0),
+            "Ua_amb": (0.1, 3.0),
+            "A_tot": (7e-9, 5e-7),
+            "A_dis": (4e-6, 5e-4),
+            "V_IC": (vic_lo, vic_hi),
+            "alpha_loss": (0.10, 0.30),
+            "W_dot_loss_ref": (40.0, 100.0),
+            "alpha_fric_tot": (150.0, 500.0),
+        }
+    else:
+        raise ValueError("Unknown model. Use original | modified")
+
+    missing = [name for name in param_names if name not in by_name]
+    if missing:
+        raise ValueError(f"No bounds defined for parameters: {missing}")
 
     return np.array([by_name[name] for name in param_names], dtype=float)
 
@@ -820,8 +840,8 @@ def main():
     ap.add_argument("--Tdis_norm_K", type=float, default=50.0)
 
     # Bounds scaling for V_IC
-    ap.add_argument("--vic_lo_scale", type=float, default=0.5)
-    ap.add_argument("--vic_hi_scale", type=float, default=2.0)
+    ap.add_argument("--vic_lo_scale", type=float, default=0.95)
+    ap.add_argument("--vic_hi_scale", type=float, default=1.05)
 
     ap.add_argument("--out_dir", default="results/ga_fit")
 

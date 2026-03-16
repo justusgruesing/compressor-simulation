@@ -2,12 +2,12 @@
 #
 # Genetic Algorithm fitter for Molinaroli compressor models.
 #
-# New data-selection logic:
-# - The script no longer draws random training points from the raw dataset.
-# - Instead, it reads:
+# Data selection logic:
+# - Training / validation points are not sampled randomly.
+# - Instead, the script reads:
 #     1) operating_points_rows.csv
 #     2) operating_points_split_template.csv
-# - Training / validation assignment is taken from split_role in the split template.
+# - Train / validation assignment is taken from split_role in the split template.
 #
 # Typical workflow:
 # 1) Create operating_points_rows + operating_points_split_template
@@ -16,42 +16,40 @@
 #       validation
 # 3) Run this script with those two CSV files
 #
-# activate Refprop:
-# cd C:\Users\ahl-jgr\PycharmProjects\compressor-simulation
-# .venv\Scripts\activate
-# $env:RPPREFIX = "T:\ahl\REFPROP"
+# Activate REFPROP:
+#   cd C:\Users\ahl-jgr\PycharmProjects\compressor-simulation
+#   .venv\Scripts\activate
+#   $env:RPPREFIX = "T:\ahl\REFPROP"
 #
-# limiting Threads:
-# $env:OPENBLAS_NUM_THREADS = "1"
-# $env:MKL_NUM_THREADS = "1"
-# $env:OMP_NUM_THREADS = "1"
+# Limit BLAS threads:
+#   $env:OPENBLAS_NUM_THREADS = "1"
+#   $env:MKL_NUM_THREADS = "1"
+#   $env:OMP_NUM_THREADS = "1"
 #
-# Examples:
-#   python scripts/fit_parameters_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil aLPG68 --model modified --refrigerant PROPANE --population 20 --generations 20 --n_jobs 10 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
-#
-#
+# Example:
+#   python scripts/fit_molinaroli_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE --population 20 --generations 20 --n_jobs 10 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
+
 from __future__ import annotations
 
 import argparse
+import atexit
 import multiprocessing as mp
 import os
+import re
+import shutil
+import tempfile
+import uuid
+import warnings
 from concurrent.futures import ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import tempfile
-import shutil
-import atexit
-import uuid
-import warnings
-import re
-
 import numpy as np
 import pandas as pd
 
-from vclibpy.components.compressors import (
-    Molinaroli_2017_Compressor,
+from vclibpy.components.compressors import Molinaroli_2017_Compressor
+from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified import (
     Molinaroli_2017_Compressor_Modified,
 )
 from vclibpy.datamodels import FlowsheetState
@@ -93,17 +91,15 @@ warnings.showwarning = _warn_handler
 # =========================================================
 OP_ID_COL_DEFAULT = "op_id"
 OIL_COL_DEFAULT = "Ölbezeichnung"
-OIL_NORM_COL_DEFAULT = "_oil_norm"
-REFRIGERANT_COL_DEFAULT = "Kältemittel"
 
-P_SUC_COL_DEFAULT = "P1_mean"            # bar
-T_SUC_COL_DEFAULT = "T1_mean"            # °C
-P_OUT_COL_DEFAULT = "P2_mean"            # bar
-T_AMB_COL_DEFAULT = "Tamb_mean"          # °C
-SPEED_COL_DEFAULT = "N"                  # rpm
-M_FLOW_MEAS_COL_DEFAULT = "suction_mf_mean"  # g/s
-P_EL_MEAS_COL_DEFAULT = "Pel_mean"           # W
-T_DIS_MEAS_COL_DEFAULT = "T2_mean"           # °C
+P_SUC_COL_DEFAULT = "P1_mean"                 # bar
+T_SUC_COL_DEFAULT = "T1_mean"                 # °C
+P_OUT_COL_DEFAULT = "P2_mean"                 # bar
+T_AMB_COL_DEFAULT = "Tamb_mean"               # °C
+SPEED_COL_DEFAULT = "N"                       # rpm
+M_FLOW_MEAS_COL_DEFAULT = "suction_mf_mean"   # g/s
+P_EL_MEAS_COL_DEFAULT = "Pel_mean"            # W
+T_DIS_MEAS_COL_DEFAULT = "T2_mean"            # °C
 
 SOURCE_ROW_COL_DEFAULT = "source_row_index"
 FILTERED_ROW_COL_DEFAULT = "filtered_row_index"
@@ -111,6 +107,8 @@ FILTERED_ROW_COL_DEFAULT = "filtered_row_index"
 # Split template columns
 SPLIT_ROLE_COL_DEFAULT = "split_role"
 SHARED_OK_COL_DEFAULT = "usable_for_shared_split"
+SPLIT_NOTE_COL_DEFAULT = "split_note"
+
 
 # =========================================================
 # Molinaroli references
@@ -121,6 +119,7 @@ Q_REF = 1.0
 
 # Penalty for failed simulations
 FAIL_E = 1e3
+
 
 # =========================================================
 # Parameter sets
@@ -209,21 +208,33 @@ def parse_bool_like(x) -> bool:
         return bool(x)
     if pd.isna(x):
         return False
+
     s = str(x).strip().lower()
-    return s in {"1", "true", "t", "yes", "y"}
+    if s in {"1", "true", "t", "yes", "y"}:
+        return True
+    if s in {"0", "false", "f", "no", "n"}:
+        return False
+
+    raise ValueError(f"Could not parse boolean value from: {x}")
 
 
 def parse_split_role(x: object) -> str:
     if pd.isna(x):
         return ""
+
     s = str(x).strip().lower()
+
+    if s in {"", "unused"}:
+        return ""
     if s in {"train", "training", "fit"}:
         return "train"
     if s in {"validation", "valid", "val", "test"}:
         return "validation"
-    if s in {"unused", "skip", "holdout", ""}:
-        return ""
-    return s
+
+    raise ValueError(
+        f"Unsupported split_role value: {x!r}. "
+        f"Allowed values are: train, validation, unused/blank."
+    )
 
 
 def _clamp01(x):
@@ -354,7 +365,11 @@ def prepare_merged_dataframe(op_rows_df: pd.DataFrame, split_df: pd.DataFrame, a
     if missing_op:
         raise ValueError(f"operating_points_rows CSV missing required columns: {missing_op}")
 
-    required_split_cols = [args.op_id_col, args.split_role_col]
+    required_split_cols = [
+        args.op_id_col,
+        args.split_role_col,
+        args.shared_ok_col,
+    ]
     missing_split = [c for c in required_split_cols if c not in split_df.columns]
     if missing_split:
         raise ValueError(f"split CSV missing required columns: {missing_split}")
@@ -363,34 +378,25 @@ def prepare_merged_dataframe(op_rows_df: pd.DataFrame, split_df: pd.DataFrame, a
     sp = split_df.copy()
 
     sp[args.split_role_col] = sp[args.split_role_col].apply(parse_split_role)
-
-    if args.shared_ok_col in sp.columns:
-        sp[args.shared_ok_col] = sp[args.shared_ok_col].apply(parse_bool_like)
-    else:
-        sp[args.shared_ok_col] = True
+    sp[args.shared_ok_col] = sp[args.shared_ok_col].apply(parse_bool_like)
 
     merge_cols = [args.op_id_col, args.split_role_col, args.shared_ok_col]
-    for extra_col in ("split_note",):
-        if extra_col in sp.columns:
-            merge_cols.append(extra_col)
+    if args.split_note_col in sp.columns:
+        merge_cols.append(args.split_note_col)
 
     merged = op.merge(sp[merge_cols], on=args.op_id_col, how="left")
 
-    # Normalize oil
-    if args.oil_norm_col in merged.columns:
-        merged["_oil_norm_fit"] = merged[args.oil_norm_col].astype(str).map(norm_oil)
-    else:
-        merged["_oil_norm_fit"] = merged[args.oil_col].astype(str).map(norm_oil)
+    merged["_oil_norm_fit"] = merged[args.oil_col].astype(str).map(norm_oil)
 
     oil_sel = norm_oil(args.oil)
+    if oil_sel not in {"lpg68", "lpg100", "all"}:
+        raise ValueError("--oil must be LPG68, LPG100 or all")
+
     if oil_sel != "all":
         merged = merged[merged["_oil_norm_fit"] == oil_sel].copy()
-
-    # For oil=all: only keep op_ids that are explicitly marked as usable shared points
-    if oil_sel == "all":
+    else:
         merged = merged[merged[args.shared_ok_col] == True].copy()
 
-        # Extra safety: keep only op_ids that really have both oils
         opid_oil_counts = merged.groupby(args.op_id_col)["_oil_norm_fit"].nunique()
         valid_shared_opids = opid_oil_counts[opid_oil_counts >= 2].index
         merged = merged[merged[args.op_id_col].isin(valid_shared_opids)].copy()
@@ -451,7 +457,7 @@ def build_row_records(df: pd.DataFrame, args, N_max_hz: float) -> tuple[list[dic
                 "oil_name": str(r[args.oil_col]),
                 "oil_norm": norm_oil(r[args.oil_col]),
                 "split_role": parse_split_role(r.get(args.split_role_col, "")),
-                "split_note": r.get("split_note", ""),
+                "split_note": r.get(args.split_note_col, ""),
                 "p_suc_pa": bar_to_pa(r[args.col_p_suc]),
                 "T_suc_K": c_to_k(r[args.col_T_suc]),
                 "p_out_pa": bar_to_pa(r[args.col_p_out]),
@@ -680,10 +686,7 @@ def _init_worker(
 
     atexit.register(_cleanup)
 
-    try:
-        med = RefProp(fluid_name=refrigerant_name)
-    except TypeError:
-        med = RefProp(refrigerant_name)
+    med = RefProp(fluid_name=refrigerant_name)
 
     _WORK = {
         "med": med,
@@ -787,14 +790,13 @@ def main():
 
     ap.add_argument("--op_id_col", default=OP_ID_COL_DEFAULT)
     ap.add_argument("--oil_col", default=OIL_COL_DEFAULT)
-    ap.add_argument("--oil_norm_col", default=OIL_NORM_COL_DEFAULT)
-    ap.add_argument("--refrigerant_col", default=REFRIGERANT_COL_DEFAULT)
 
     ap.add_argument("--source_row_col", default=SOURCE_ROW_COL_DEFAULT)
     ap.add_argument("--filtered_row_col", default=FILTERED_ROW_COL_DEFAULT)
 
     ap.add_argument("--split_role_col", default=SPLIT_ROLE_COL_DEFAULT)
     ap.add_argument("--shared_ok_col", default=SHARED_OK_COL_DEFAULT)
+    ap.add_argument("--split_note_col", default=SPLIT_NOTE_COL_DEFAULT)
 
     ap.add_argument("--col_p_suc", default=P_SUC_COL_DEFAULT)
     ap.add_argument("--col_T_suc", default=T_SUC_COL_DEFAULT)
@@ -851,14 +853,13 @@ def main():
     rows_all, has_Tdis = build_row_records(merged_df, args, N_max_hz)
     use_Tdis = bool(has_Tdis)
 
-    # Training rows are explicitly defined in split_role
     rows_train = [r for r in rows_all if r["split_role"] == "train"]
     rows_validation = [r for r in rows_all if r["split_role"] == "validation"]
     rows_unused = [r for r in rows_all if r["split_role"] == ""]
 
     if not rows_train:
         raise ValueError(
-            "No training points found. Fill the split_role column in split CSV with 'train' for the desired operating points."
+            "No training points found. Fill the split_role column in split CSV with 'train'."
         )
 
     print(f"  rows_all         = {len(rows_all)}")
@@ -866,16 +867,16 @@ def main():
     print(f"  rows_validation  = {len(rows_validation)}")
     print(f"  rows_unused      = {len(rows_unused)}")
 
+    if not use_Tdis:
+        print(f"[INFO] Column '{args.col_T_dis}' not found — T_dis not used in objective.")
+
     train_op_ids = sorted({r["op_id"] for r in rows_train})
     val_op_ids = sorted({r["op_id"] for r in rows_validation})
 
     # -------------------------
     # RefProp in main process
     # -------------------------
-    try:
-        med = RefProp(fluid_name=args.refrigerant)
-    except TypeError:
-        med = RefProp(args.refrigerant)
+    med = RefProp(fluid_name=args.refrigerant)
 
     m_dot_ref = compute_m_dot_ref(med, V_h_m3)
     print(f"  m_dot_ref = {m_dot_ref * 1e3:.4f} g/s  (V_h={args.V_h_cm3} cm³, f_ref={F_REF} Hz)")
@@ -920,6 +921,7 @@ def main():
         n_jobs = os.cpu_count() or 1
 
     if n_jobs == 1:
+
         def eval_pop(pop):
             errs = np.empty(len(pop), dtype=float)
             for i, ind in enumerate(pop):
@@ -941,7 +943,9 @@ def main():
             return errs
 
         executor = None
+
     else:
+
         def make_executor():
             return ProcessPoolExecutor(
                 max_workers=n_jobs,
@@ -1148,6 +1152,7 @@ def main():
                 "op_id": r["op_id"],
                 "oil": r["oil_name"],
                 "split_role": r["split_role"],
+                "split_note": r.get("split_note", ""),
                 "is_train": bool(r["split_role"] == "train"),
                 "is_validation": bool(r["split_role"] == "validation"),
                 "f_oper_hz": r["f_oper_hz"],

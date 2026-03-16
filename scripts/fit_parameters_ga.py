@@ -1,4 +1,4 @@
-# scripts/fit_molinaroli_ga.py
+# scripts/fit_parameters_ga.py
 #
 # Genetic Algorithm fitter for Molinaroli compressor models.
 #
@@ -27,7 +27,7 @@
 #   $env:OMP_NUM_THREADS = "1"
 #
 # Example:
-#   python scripts/fit_molinaroli_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE --population 20 --generations 20 --n_jobs 10 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
+#   python scripts/fit_parameters_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE --population 20 --generations 20 --n_jobs 10 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
 
 from __future__ import annotations
 

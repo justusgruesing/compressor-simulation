@@ -27,7 +27,7 @@
 #   $env:OMP_NUM_THREADS = "1"
 #
 # Example:
-#   python scripts/fit_parameters_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE --population 20 --generations 20 --n_jobs 10 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
+#   python scripts/fit_parameters_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE --population 80 --generations 250 --n_jobs 20 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
 
 from __future__ import annotations
 
@@ -776,12 +776,12 @@ def build_bounds(model: str, V_h_m3: float, vic_lo_scale: float, vic_hi_scale: f
             "Ua_suc_ref": (8.0, 55.0),
             "Ua_dis_ref": (2.0, 20.0),
             "Ua_amb": (0.1, 3.0),
-            "A_tot": (7e-9, 5e-7),
+            "A_tot": (2e-9, 5e-7),
             "A_dis": (4e-6, 5e-4),
             "V_IC": (vic_lo, vic_hi),
             "alpha_loss": (0.10, 0.30),
-            "W_dot_loss_ref": (40.0, 100.0),
-            "alpha_fric_tot": (150.0, 500.0),
+            "W_dot_loss_ref": (30.0, 80.0),
+            "alpha_fric_tot": (500.0, 900.0),
         }
     else:
         raise ValueError("Unknown model. Use original | modified")

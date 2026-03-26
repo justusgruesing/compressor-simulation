@@ -19,12 +19,16 @@ from vclibpy.components.compressors import (
     Molinaroli_2017_Compressor,
     Molinaroli_2017_Compressor_Modified,
 )
+from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
+    Molinaroli_2017_Compressor_Oil_Path,
+)
 
 #
 # Beispielaufrufe:
 # python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model original --refrigerant PROPANE
 # python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model modified --refrigerant PROPANE --params_csv data/start_params_modified.csv
-# python scripts/run_batch.py --csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE
+# python scripts/run_batch.py --csv data/Datensatz_Fitting_1.csv --oil LPG68 --model oil_path --refrigerant PROPANE
+# python scripts/run_batch.py --csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model oil_path --refrigerant PROPANE --sep "," --header 0 --decimal "."
 #
 
 # =========================
@@ -89,6 +93,21 @@ PARAM_NAMES_MODIFIED = [
     "mu_fallback",
 ]
 
+PARAM_NAMES_OIL_PATH = [
+    "Ua_suc_ref",
+    "Ua_dis_ref",
+    "Ua_amb",
+    "A_tot",
+    "A_dis",
+    "V_IC",
+    "alpha_loss",
+    "W_dot_loss_ref",
+    "alpha_fric_tot",
+    "mu_fallback",
+    "m_dot_oil_ref",
+    "Ua_suc_oil_ref",
+]
+
 DEFAULT_PARAMS_ORIGINAL = {
     "Ua_suc_ref": 16.05,
     "Ua_dis_ref": 13.96,
@@ -113,6 +132,23 @@ DEFAULT_PARAMS_MODIFIED = {
     "W_dot_loss_ref": 10.0,
     "alpha_fric_tot": 120.0,
     "mu_fallback": 5.0,
+    "m_dot_ref": None,
+    "f_ref": F_REF,
+}
+
+DEFAULT_PARAMS_OIL_PATH = {
+    "Ua_suc_ref": 16.05,
+    "Ua_dis_ref": 13.96,
+    "Ua_amb": 0.36,
+    "A_tot": 9.47e-9,
+    "A_dis": 86.1e-6,
+    "V_IC": 30.7e-6,
+    "alpha_loss": 0.16,
+    "W_dot_loss_ref": 10.0,
+    "alpha_fric_tot": 120.0,
+    "mu_fallback": 5.0,
+    "m_dot_oil_ref": 0.01,
+    "Ua_suc_oil_ref": 5.0,
     "m_dot_ref": None,
     "f_ref": F_REF,
 }
@@ -192,12 +228,6 @@ def parse_split_role(x: object) -> str:
 
 
 def _add_compact_state(rec: dict, prefix: str, st) -> None:
-    """
-    Output only:
-      - pressure in bar
-      - temperature in °C
-      - density in kg/m³
-    """
     if st is None:
         rec[f"{prefix}_p_bar"] = float("nan")
         rec[f"{prefix}_T_C"] = float("nan")
@@ -224,22 +254,35 @@ def read_split_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def get_default_params(model: str) -> dict:
+def _model_key(model: str) -> str:
     m = str(model).lower().strip()
     if m in ("orig", "original"):
-        return dict(DEFAULT_PARAMS_ORIGINAL)
+        return "original"
     if m in ("mod", "modified"):
+        return "modified"
+    if m in ("oil_path", "oilpath", "oil"):
+        return "oil_path"
+    raise ValueError("Unknown --model. Use: original | modified | oil_path")
+
+
+def get_default_params(model: str) -> dict:
+    k = _model_key(model)
+    if k == "original":
+        return dict(DEFAULT_PARAMS_ORIGINAL)
+    if k == "modified":
         return dict(DEFAULT_PARAMS_MODIFIED)
-    raise ValueError("Unknown --model. Use: original | modified")
+    if k == "oil_path":
+        return dict(DEFAULT_PARAMS_OIL_PATH)
 
 
 def get_param_names(model: str) -> list[str]:
-    m = str(model).lower().strip()
-    if m in ("orig", "original"):
+    k = _model_key(model)
+    if k == "original":
         return list(PARAM_NAMES_ORIGINAL)
-    if m in ("mod", "modified"):
+    if k == "modified":
         return list(PARAM_NAMES_MODIFIED)
-    raise ValueError("Unknown --model. Use: original | modified")
+    if k == "oil_path":
+        return list(PARAM_NAMES_OIL_PATH)
 
 
 def load_params_csv(path: Path, model: str) -> dict:
@@ -263,7 +306,6 @@ def load_params_csv(path: Path, model: str) -> dict:
 def merge_split_information(df: pd.DataFrame, split_csv: Path | None, args) -> pd.DataFrame:
     out = df.copy()
 
-    # If no split CSV is provided, still normalize an existing split_role column if present
     if split_csv is None:
         if args.split_role_col in out.columns:
             out[args.split_role_col] = out[args.split_role_col].apply(parse_split_role)
@@ -304,22 +346,22 @@ def merge_split_information(df: pd.DataFrame, split_csv: Path | None, args) -> p
 
 
 # =========================
-# Name mapping for modified model
+# Name mapping
 # =========================
-def map_refrigerant_for_modified_model(name: str) -> str:
+def map_refrigerant_for_oil_model(name: str) -> str:
     s = str(name).strip().upper()
     if s in ("PROPANE", "R290", "PROPAN"):
         return "propane"
     return str(name).strip().lower()
 
 
-def map_oil_for_modified_model(name: str) -> str:
+def map_oil_for_oil_model(name: str) -> str:
     s = norm_oil(name)
     if s == "lpg68":
         return "LPG 68"
     if s == "lpg100":
         return "LPG 100"
-    raise ValueError(f"Unsupported oil for modified model: {name}")
+    raise ValueError(f"Unsupported oil: {name}")
 
 
 # =========================
@@ -333,16 +375,16 @@ def pick_model(
     fluid_name: str = None,
     lub_name: str = None,
 ):
-    m = model_name.lower().strip()
+    k = _model_key(model_name)
 
-    if m in ("orig", "original"):
+    if k == "original":
         return Molinaroli_2017_Compressor(
             N_max=N_max_hz,
             V_h=V_h_m3,
             parameters=parameters,
         )
 
-    if m in ("mod", "modified"):
+    if k == "modified":
         return Molinaroli_2017_Compressor_Modified(
             N_max=N_max_hz,
             V_h=V_h_m3,
@@ -351,7 +393,18 @@ def pick_model(
             parameters=parameters,
         )
 
-    raise ValueError("Unknown --model. Use: original | modified")
+    if k == "oil_path":
+        return Molinaroli_2017_Compressor_Oil_Path(
+            N_max=N_max_hz,
+            V_h=V_h_m3,
+            fluid_name=fluid_name,
+            lub_name=lub_name,
+            parameters=parameters,
+        )
+
+
+def _model_needs_oil(model_name: str) -> bool:
+    return _model_key(model_name) in ("modified", "oil_path")
 
 
 def build_compressor(
@@ -364,21 +417,19 @@ def build_compressor(
     oil_name: str = None,
     debug_enabled: bool = False,
 ):
-    m = model_name.lower().strip()
-
-    if m in ("mod", "modified"):
+    if _model_needs_oil(model_name):
         if oil_name is None:
-            raise ValueError("Modified model requires an oil name.")
-        fluid_name_mod = map_refrigerant_for_modified_model(refrigerant_name)
-        lub_name_mod = map_oil_for_modified_model(oil_name)
+            raise ValueError(f"Model '{model_name}' requires an oil name.")
+        fluid_name = map_refrigerant_for_oil_model(refrigerant_name)
+        lub_name = map_oil_for_oil_model(oil_name)
 
         comp = pick_model(
             model_name=model_name,
             N_max_hz=N_max_hz,
             V_h_m3=V_h_m3,
             parameters=parameters,
-            fluid_name=fluid_name_mod,
-            lub_name=lub_name_mod,
+            fluid_name=fluid_name,
+            lub_name=lub_name,
         )
     else:
         comp = pick_model(
@@ -400,18 +451,69 @@ def compute_m_dot_ref(med: RefProp, V_h_m3: float) -> float:
 
 
 # =========================
+# Oil path output extraction
+# =========================
+def _extract_oil_path_outputs(rec: dict, comp, success: bool) -> None:
+    """Extract oil-path-specific attributes into the result dict."""
+    if not success:
+        oil_keys = [
+            "m_dot_oil_kg_s", "m_dot_fl_kg_s", "m_dot_gas_discharge_kg_s",
+            "Q_suc_oil_W", "W_dot_oil_recirc_W", "Q_dis_total_W",
+            "m_dot_KM_degas_thr_kg_s", "m_dot_KM_degas_ht_kg_s",
+            "m_dot_KM_degas_total_kg_s", "m_dot_KM_degas_ht_raw_kg_s",
+            "w_KM_sump", "w_KM_after", "w_KM_after_raw",
+            "T_oil_after_C",
+            "T_dis_est_C", "T_dis_corr_C",
+            "m_dot_KM_gas_diag_kg_s", "T_KM_gas_diag_C",
+        ]
+        for k in oil_keys:
+            rec[k] = float("nan")
+        return
+
+    rec["m_dot_oil_kg_s"] = _finite(getattr(comp, "m_dot_oil", np.nan))
+    rec["m_dot_fl_kg_s"] = _finite(getattr(comp, "m_dot_fl", np.nan))
+    rec["m_dot_gas_discharge_kg_s"] = _finite(getattr(comp, "m_dot_gas_discharge", np.nan))
+
+    rec["Q_suc_oil_W"] = _finite(getattr(comp, "Q_dot_suc_oil", np.nan))
+    rec["W_dot_oil_recirc_W"] = _finite(getattr(comp, "W_dot_oil_recirc", np.nan))
+    rec["Q_dis_total_W"] = _finite(getattr(comp, "Q_dis_total", np.nan))
+
+    rec["m_dot_KM_degas_thr_kg_s"] = _finite(getattr(comp, "m_dot_KM_degas_thr", np.nan))
+    rec["m_dot_KM_degas_ht_kg_s"] = _finite(getattr(comp, "m_dot_KM_degas_ht", np.nan))
+    rec["m_dot_KM_degas_total_kg_s"] = _finite(getattr(comp, "m_dot_KM_degas_total", np.nan))
+    rec["m_dot_KM_degas_ht_raw_kg_s"] = _finite(getattr(comp, "m_dot_KM_degas_ht_raw", np.nan))
+
+    rec["w_KM_sump"] = _finite(getattr(comp, "w_KM_sump", np.nan))
+    rec["w_KM_after"] = _finite(getattr(comp, "w_KM_after", np.nan))
+    rec["w_KM_after_raw"] = _finite(getattr(comp, "w_KM_after_raw", np.nan))
+
+    T_oil_after = _finite(getattr(comp, "T_oil_after", np.nan))
+    rec["T_oil_after_C"] = k_to_c(T_oil_after) if np.isfinite(T_oil_after) else float("nan")
+
+    T_dis_est = _finite(getattr(comp, "T_dis_est", np.nan))
+    T_dis_corr = _finite(getattr(comp, "T_dis_corr", np.nan))
+    rec["T_dis_est_C"] = k_to_c(T_dis_est) if np.isfinite(T_dis_est) else float("nan")
+    rec["T_dis_corr_C"] = k_to_c(T_dis_corr) if np.isfinite(T_dis_corr) else float("nan")
+
+    m_KM_gas = _finite(getattr(comp, "m_dot_KM_gas", np.nan))
+    T_KM_gas = _finite(getattr(comp, "T_KM_gas", np.nan))
+    rec["m_dot_KM_gas_diag_kg_s"] = m_KM_gas
+    rec["T_KM_gas_diag_C"] = k_to_c(T_KM_gas) if np.isfinite(T_KM_gas) else float("nan")
+
+
+# =========================
 # Main
 # =========================
 def main():
     ap = argparse.ArgumentParser(
-        description="Batch simulation for Molinaroli compressor models (original / modified, RefProp backend)."
+        description="Batch simulation for Molinaroli compressor models (original / modified / oil_path)."
     )
 
     ap.add_argument("--csv", required=True, help="Input CSV path.")
     ap.add_argument("--split_csv", default=None, help="Optional split CSV to merge via op_id.")
     ap.add_argument("--out", default=None, help="Output CSV path (default: results/batch_<timestamp>.csv)")
 
-    ap.add_argument("--model", default="original", choices=["original", "modified"])
+    ap.add_argument("--model", default="original", choices=["original", "modified", "oil_path"])
     ap.add_argument("--refrigerant", default="PROPANE")
 
     ap.add_argument("--N_max_rpm", type=float, default=7200.0, help="Max speed [rpm] from datasheet")
@@ -448,6 +550,8 @@ def main():
     args = ap.parse_args()
 
     original_cwd = Path.cwd()
+    model_key = _model_key(args.model)
+    is_oil_path = model_key == "oil_path"
 
     csv_path = Path(args.csv)
     if not csv_path.is_absolute():
@@ -480,7 +584,7 @@ def main():
         results_dir = (original_cwd / "results").resolve()
         results_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        out_path = results_dir / f"batch_{args.oil.lower()}_{args.model.lower()}_{ts}.csv"
+        out_path = results_dir / f"batch_{args.oil.lower()}_{model_key}_{ts}.csv"
 
     # -------------------------
     # Read and prepare data
@@ -565,10 +669,10 @@ def main():
 
             oil_value = str(row[args.oil_col]) if args.oil_col in df.columns else ""
 
-            if args.model.lower().strip() == "modified":
+            if _model_needs_oil(args.model):
                 if not oil_value:
-                    raise ValueError("Modified model requires an oil column in the dataset.")
-                comp_key = ("modified", norm_oil(oil_value))
+                    raise ValueError(f"Model '{args.model}' requires an oil column in the dataset.")
+                comp_key = (model_key, norm_oil(oil_value))
             else:
                 comp_key = ("original", "single")
 
@@ -580,12 +684,12 @@ def main():
                     parameters=params_base.copy(),
                     med=med,
                     refrigerant_name=args.refrigerant,
-                    oil_name=oil_value if args.model == "modified" else None,
+                    oil_name=oil_value if _model_needs_oil(args.model) else None,
                     debug_enabled=args.debug_model,
                 )
             comp = comp_cache[comp_key]
 
-            # Suction superheat from measured suction pressure / temperature
+            # Suction superheat
             try:
                 st_sat = med.calc_state("PQ", float(p_suc_pa), 1.0)
                 T_sat_suc_K = _finite(getattr(st_sat, "T", np.nan))
@@ -601,7 +705,7 @@ def main():
 
             rec = {
                 "row_index": int(i),
-                "model": args.model,
+                "model": model_key,
                 "backend": "RefProp",
                 "refrigerant": args.refrigerant,
                 "oil": oil_value,
@@ -683,18 +787,15 @@ def main():
                 mu_oil = _finite(getattr(comp, "mu_oil", np.nan))
                 mu_mix_eff = _finite(getattr(comp, "mu_mix_eff", np.nan))
 
-                # Fallback only for original model or if detailed terms are not exposed
+                # Fallback for original model
                 if not np.isfinite(W_dot_int) or not np.isfinite(W_dot_loss):
                     try:
                         rho3 = float(getattr(comp, "state_c_3").d)
                         h3 = float(getattr(comp, "state_c_3").h)
                         h4 = float(getattr(comp, "state_c_4").h)
-
                         V_IC = float(params_base["V_IC"])
                         m_dot_3 = rho3 * V_IC * float(n_abs)
-
                         W_dot_int = m_dot_3 * (h4 - h3)
-
                         alpha_loss = float(params_base["alpha_loss"])
                         W_dot_loss_ref = float(params_base["W_dot_loss_ref"])
                         W_dot_loss = (
@@ -725,6 +826,10 @@ def main():
                 rec["T_oil_sump_C"] = k_to_c(T_oil_sump_K) if np.isfinite(T_oil_sump_K) else float("nan")
                 rec["mu_oil_mPas"] = float(mu_oil) if np.isfinite(mu_oil) else float("nan")
                 rec["mu_mix_eff_Pa_s"] = float(mu_mix_eff) if np.isfinite(mu_mix_eff) else float("nan")
+
+                # Oil path specific outputs
+                if is_oil_path:
+                    _extract_oil_path_outputs(rec, comp, success=True)
 
                 if has_m_meas and pd.notna(row[args.col_m_meas]):
                     rec["m_meas_g_s"] = float(row[args.col_m_meas])
@@ -771,6 +876,9 @@ def main():
                 rec["e_T_dis_abs_C"] = np.nan
                 rec["e_T_dis_abs_abs_C"] = np.nan
 
+                if is_oil_path:
+                    _extract_oil_path_outputs(rec, comp, success=False)
+
                 if has_m_meas:
                     rec["m_meas_g_s"] = float(row[args.col_m_meas]) if pd.notna(row[args.col_m_meas]) else np.nan
                     rec["e_m_rel"] = np.nan
@@ -779,6 +887,13 @@ def main():
                     rec["e_P_rel"] = np.nan
 
             results.append(rec)
+
+        # Print debug report if available
+        if args.debug_model:
+            for key, comp in comp_cache.items():
+                if hasattr(comp, "get_debug_report"):
+                    print(f"\n--- Debug report for {key} ---")
+                    print(comp.get_debug_report())
 
         out_df = pd.DataFrame(results)
 
@@ -844,6 +959,27 @@ def main():
             "W_dot_loss_share",
         ]
 
+        oil_path_cols = [
+            "m_dot_oil_kg_s",
+            "m_dot_fl_kg_s",
+            "m_dot_gas_discharge_kg_s",
+            "Q_suc_oil_W",
+            "W_dot_oil_recirc_W",
+            "Q_dis_total_W",
+            "m_dot_KM_degas_thr_kg_s",
+            "m_dot_KM_degas_ht_kg_s",
+            "m_dot_KM_degas_total_kg_s",
+            "m_dot_KM_degas_ht_raw_kg_s",
+            "w_KM_sump",
+            "w_KM_after",
+            "w_KM_after_raw",
+            "T_oil_after_C",
+            "T_dis_est_C",
+            "T_dis_corr_C",
+            "m_dot_KM_gas_diag_kg_s",
+            "T_KM_gas_diag_C",
+        ]
+
         error_cols = [
             "m_meas_g_s",
             "e_m_rel",
@@ -861,6 +997,7 @@ def main():
             + _keep_existing(input_cols)
             + _keep_existing(state_cols)
             + _keep_existing(output_cols)
+            + _keep_existing(oil_path_cols)
             + _keep_existing(error_cols)
         )
         remaining = [c for c in out_df.columns if c not in ordered]
@@ -872,7 +1009,7 @@ def main():
         n_total = len(out_df)
 
         print("\n=== Batch done ===")
-        print(f"oil: {args.oil}, model: {args.model}, refrigerant: {args.refrigerant}, backend: RefProp")
+        print(f"oil: {args.oil}, model: {model_key}, refrigerant: {args.refrigerant}, backend: RefProp")
         print(f"points: {n_ok}/{n_total} successful")
         print(f"params source: {params_csv_path if params_csv_path else 'model defaults'}")
         print(f"split source:  {split_csv_path if split_csv_path else 'none'}")

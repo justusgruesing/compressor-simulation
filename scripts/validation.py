@@ -1,41 +1,66 @@
 # scripts/validation.py
-# Beispielaufruf:
-# python scripts/validation.py --csv data/Datensatz_Fitting_2.csv --params_csv results/final_results/Molinaroli_LPG68/fitted_params_lpg68_original_ga_2026-03-08_101308.csv --split_csv results/final_results/Molinaroli_LPG68/fit_predictions_lpg68_original_ga_2026-03-08_101308.csv
 #
+# Validation script for Molinaroli compressor models.
+#
+# Supports two input modes:
+#   A) New mode (like GA fitting script):
+#      --op_rows_csv + --split_csv
+#   B) Legacy mode:
+#      --csv with --sep, --header, --decimal + optional --split_csv
+#
+# Cross-validation:
+#   --oil controls which DATA rows are used for validation (LPG68 | LPG100 | all).
+#   --params_csv provides the fitted parameters (can be from any oil).
+#   This allows cross-validation, e.g. params fitted on LPG68, validated on LPG100.
+#
+# Shared RefProp:
+#   A single RefProp instance is created and shared with the compressor and
+#   (for the modified model) the lubricant fitting. No additional DLL copies.
+#
+# Activate REFPROP:
+#   cd C:\Users\ahl-jgr\PycharmProjects\compressor-simulation
+#   .venv\Scripts\activate
+#   $env:RPPREFIX = "T:\ahl\REFPROP"
+#
+# Example (new mode, cross-validation: params from LPG68, validate on LPG100):
+#   python scripts/validation.py  --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_modified_ga_2026-03-18_143802.csv --model modified --oil LPG68 --selection_mode all
+#
+# Example (legacy mode):
+#   python scripts/validation.py \
+#       --csv data/Datensatz_Fitting_2.csv \
+#       --params_csv results/ga_fit/fitted_params_lpg68_original_ga_2026-03-08.csv \
+#       --split_csv results/ga_fit/fit_predictions_lpg68_original_ga_2026-03-08.csv \
+#       --model original --oil LPG68 --selection_mode all
+
+from __future__ import annotations
+
 import argparse
 from dataclasses import dataclass
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from vclibpy.media import RefProp
 from vclibpy.datamodels import FlowsheetState
-from vclibpy.components.compressors import (
-    Molinaroli_2017_Compressor,
+from vclibpy.components.compressors import Molinaroli_2017_Compressor
+from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified import (
     Molinaroli_2017_Compressor_Modified,
 )
 
-# =========================
-# Defaults for CSV
-# =========================
-OIL_COL_DEFAULT = "Ölbezeichnung"
-P_SUC_COL_DEFAULT = "P1_mean"         # bar
-T_SUC_COL_DEFAULT = "T1_mean"         # °C
-P_OUT_COL_DEFAULT = "P2_mean"         # bar
-T_AMB_COL_DEFAULT = "Tamb_mean"       # °C
-SPEED_COL_DEFAULT = "N"               # rpm
-T_OIL_SUMP_COL_DEFAULT = "T7_mean"    # °C
-T_DIS_MEAS_COL_DEFAULT = "T2_mean"    # °C
-M_FLOW_MEAS_COL_DEFAULT = "suction_mf_mean"  # g/s
-P_EL_MEAS_COL_DEFAULT = "Pel_mean"           # W
 
+# =========================================================
+# Constants
+# =========================================================
 F_REF = 50.0
 T_REF = 273.15
 Q_REF = 1.0
 
-PARAM_NAMES = [
+# =========================================================
+# Parameter definitions (must match GA fitting script)
+# =========================================================
+PARAM_NAMES_ORIGINAL = [
     "Ua_suc_ref",
     "Ua_dis_ref",
     "Ua_amb",
@@ -46,55 +71,99 @@ PARAM_NAMES = [
     "W_dot_loss_ref",
 ]
 
-DEFAULT_PARAMS = {
+PARAM_NAMES_MODIFIED = [
+    "Ua_suc_ref",
+    "Ua_dis_ref",
+    "Ua_amb",
+    "A_tot",
+    "A_dis",
+    "V_IC",
+    "alpha_loss",
+    "W_dot_loss_ref",
+    "alpha_fric_tot",
+]
+
+DEFAULT_PARAMS_ORIGINAL = {
     "Ua_suc_ref": 16.05,
     "Ua_dis_ref": 13.96,
     "Ua_amb": 0.36,
     "A_tot": 9.47e-9,
     "A_dis": 86.1e-6,
-    "V_IC": 16.11e-6,
+    "V_IC": 30.7e-6,
     "alpha_loss": 0.16,
     "W_dot_loss_ref": 83.0,
     "m_dot_ref": None,
     "f_ref": F_REF,
 }
 
-
-@dataclass
-class Control:
-    n: float
-
-
-@dataclass
-class SimpleInputs:
-    control: Control
-    T_amb: float
-
-
-def bar_to_pa(p_bar: float) -> float:
-    return float(p_bar) * 100_000.0
-
-
-def pa_to_bar(p_pa: float) -> float:
-    return float(p_pa) / 100_000.0
+DEFAULT_PARAMS_MODIFIED = {
+    "Ua_suc_ref": 16.05,
+    "Ua_dis_ref": 13.96,
+    "Ua_amb": 0.36,
+    "A_tot": 9.47e-9,
+    "A_dis": 86.1e-6,
+    "V_IC": 30.7e-6,
+    "alpha_loss": 0.16,
+    "W_dot_loss_ref": 10.0,
+    "alpha_fric_tot": 120.0,
+    "m_dot_ref": None,
+    "f_ref": F_REF,
+}
 
 
-def c_to_k(t_c: float) -> float:
-    return float(t_c) + 273.15
+# =========================================================
+# Column defaults
+# =========================================================
+OP_ID_COL_DEFAULT = "op_id"
+OIL_COL_DEFAULT = "Ölbezeichnung"
+SPLIT_ROLE_COL_DEFAULT = "split_role"
+SHARED_OK_COL_DEFAULT = "usable_for_shared_split"
+SPLIT_NOTE_COL_DEFAULT = "split_note"
+
+P_SUC_COL_DEFAULT = "P1_mean"
+T_SUC_COL_DEFAULT = "T1_mean"
+P_OUT_COL_DEFAULT = "P2_mean"
+T_AMB_COL_DEFAULT = "Tamb_mean"
+SPEED_COL_DEFAULT = "N"
+T_OIL_SUMP_COL_DEFAULT = "T7_mean"
+T_DIS_MEAS_COL_DEFAULT = "T2_mean"
+M_FLOW_MEAS_COL_DEFAULT = "suction_mf_mean"
+P_EL_MEAS_COL_DEFAULT = "Pel_mean"
+
+SOURCE_ROW_COL_DEFAULT = "source_row_index"
+FILTERED_ROW_COL_DEFAULT = "filtered_row_index"
 
 
-def k_to_c(t_k: float) -> float:
-    return float(t_k) - 273.15
+# =========================================================
+# Unit conversions
+# =========================================================
+def bar_to_pa(p):
+    return float(p) * 1e5
 
 
-def rpm_to_hz(rpm: float) -> float:
-    return float(rpm) / 60.0
+def pa_to_bar(p):
+    return float(p) / 1e5
 
 
-def gs_to_kgps(g_s: float) -> float:
-    return float(g_s) / 1000.0
+def c_to_k(t):
+    return float(t) + 273.15
 
 
+def k_to_c(t):
+    return float(t) - 273.15
+
+
+def rpm_to_hz(n):
+    return float(n) / 60.0
+
+
+def gs_to_kgps(m):
+    return float(m) / 1000.0
+
+
+# =========================================================
+# Small helpers
+# =========================================================
 def norm_oil(s: str) -> str:
     return str(s).strip().lower().replace(" ", "")
 
@@ -107,13 +176,388 @@ def _finite(x):
         return float("nan")
 
 
-def _truthy(val) -> bool:
-    if isinstance(val, (bool, np.bool_)):
-        return bool(val)
-    s = str(val).strip().lower()
-    return s in {"1", "true", "t", "yes", "y"}
+def parse_split_role(x) -> str:
+    if pd.isna(x):
+        return ""
+    s = str(x).strip().lower()
+    if s in {"", "unused"}:
+        return ""
+    if s in {"train", "training", "fit"}:
+        return "train"
+    if s in {"validation", "valid", "val", "test"}:
+        return "validation"
+    raise ValueError(f"Unsupported split_role value: {x!r}")
 
 
+def parse_bool_like(x) -> bool:
+    if isinstance(x, (bool, np.bool_)):
+        return bool(x)
+    if pd.isna(x):
+        return False
+    s = str(x).strip().lower()
+    if s in {"1", "true", "t", "yes", "y"}:
+        return True
+    if s in {"0", "false", "f", "no", "n"}:
+        return False
+    raise ValueError(f"Could not parse boolean value from: {x}")
+
+
+def _clamp01(x):
+    return max(1e-9, min(1.0, float(x)))
+
+
+# =========================================================
+# Model helpers (same logic as GA script)
+# =========================================================
+def map_refrigerant_for_modified_model(name: str) -> str:
+    s = str(name).strip().upper()
+    if s in {"PROPANE", "R290", "PROPAN"}:
+        return "propane"
+    return str(name).strip()
+
+
+def map_oil_for_modified_model(name: str) -> str:
+    s = norm_oil(name)
+    if s == "lpg68":
+        return "LPG 68"
+    if s == "lpg100":
+        return "LPG 100"
+    raise ValueError(f"Unsupported oil for modified model: {name}")
+
+
+def get_param_names(model: str) -> list[str]:
+    m = str(model).lower().strip()
+    if m in ("orig", "original"):
+        return list(PARAM_NAMES_ORIGINAL)
+    if m in ("mod", "modified"):
+        return list(PARAM_NAMES_MODIFIED)
+    raise ValueError("Unknown model. Use original | modified")
+
+
+def get_default_params(model: str) -> dict:
+    m = str(model).lower().strip()
+    if m in ("orig", "original"):
+        return dict(DEFAULT_PARAMS_ORIGINAL)
+    if m in ("mod", "modified"):
+        return dict(DEFAULT_PARAMS_MODIFIED)
+    raise ValueError("Unknown model. Use original | modified")
+
+
+def make_compressor(
+    model: str,
+    N_max_hz: float,
+    V_h_m3: float,
+    params: dict,
+    refrigerant_name: str,
+    oil_name: str | None = None,
+):
+    m = str(model).lower().strip()
+
+    if m in ("orig", "original"):
+        return Molinaroli_2017_Compressor(
+            N_max=N_max_hz,
+            V_h=V_h_m3,
+            parameters=params,
+        )
+
+    if m in ("mod", "modified"):
+        if oil_name is None:
+            raise ValueError("Modified model requires an oil name.")
+        return Molinaroli_2017_Compressor_Modified(
+            N_max=N_max_hz,
+            V_h=V_h_m3,
+            fluid_name=map_refrigerant_for_modified_model(refrigerant_name),
+            lub_name=map_oil_for_modified_model(oil_name),
+            parameters=params,
+        )
+
+    raise ValueError("Unknown model. Use original | modified")
+
+
+def compute_m_dot_ref(med, V_h_m3: float) -> float:
+    st = med.calc_state("TQ", T_REF, Q_REF)
+    return float(st.d) * float(V_h_m3) * F_REF
+
+
+# =========================================================
+# Inputs wrapper
+# =========================================================
+@dataclass
+class Control:
+    n: float
+
+
+@dataclass
+class SimpleInputs:
+    control: Control
+    T_amb: float
+    lsq_max_nfev: int = 20000
+    lsq_ftol: float = 1e-8
+    lsq_xtol: float = 1e-8
+
+
+# =========================================================
+# Parameter loading
+# =========================================================
+def load_params_csv(path: Path, model: str) -> tuple[dict, dict]:
+    """Load fitted parameters and metadata from a one-row CSV."""
+    df = pd.read_csv(path)
+    if len(df) != 1:
+        raise ValueError("Params CSV must contain exactly one row.")
+    row = df.iloc[0].to_dict()
+
+    param_names = get_param_names(model)
+    default_params = get_default_params(model)
+
+    params = dict(default_params)
+    for k in param_names:
+        if k in row and pd.notna(row[k]):
+            params[k] = float(row[k])
+    if "f_ref" in row and pd.notna(row["f_ref"]):
+        params["f_ref"] = float(row["f_ref"])
+
+    meta = {}
+    for key in [
+        "oil", "refrigerant", "model", "error_sum_sq",
+        "n_train_rows", "n_validation_rows", "n_total_rows",
+        "n_train_operating_points", "n_validation_operating_points",
+        "use_Tdis", "Tdis_norm_K", "seed", "population",
+        "elite_frac", "random_keep_prob", "mutation_prob_param",
+        "generations", "n_jobs",
+        # legacy keys
+        "n_train", "n_points_total",
+    ]:
+        if key in row:
+            meta[key] = row[key]
+
+    return params, meta
+
+
+# =========================================================
+# Data loading: NEW mode (op_rows_csv + split_csv)
+# =========================================================
+def load_new_mode(args) -> pd.DataFrame:
+    """Load and merge operating_points_rows + split_template (same logic as GA script)."""
+    op_df = pd.read_csv(args.op_rows_csv)
+    sp_df = pd.read_csv(args.split_csv)
+
+    sp_df[args.split_role_col] = sp_df[args.split_role_col].apply(parse_split_role)
+    if args.shared_ok_col in sp_df.columns:
+        sp_df[args.shared_ok_col] = sp_df[args.shared_ok_col].apply(parse_bool_like)
+    else:
+        sp_df[args.shared_ok_col] = True
+
+    merge_cols = [args.op_id_col, args.split_role_col, args.shared_ok_col]
+    if args.split_note_col in sp_df.columns:
+        merge_cols.append(args.split_note_col)
+
+    merged = op_df.merge(sp_df[merge_cols], on=args.op_id_col, how="left")
+    merged["_oil_norm"] = merged[args.oil_col].astype(str).map(norm_oil)
+
+    # Filter by oil
+    oil_sel = norm_oil(args.oil)
+    if oil_sel not in {"lpg68", "lpg100", "all"}:
+        raise ValueError("--oil must be LPG68, LPG100 or all")
+
+    if oil_sel != "all":
+        merged = merged[merged["_oil_norm"] == oil_sel].copy()
+    else:
+        merged = merged[merged[args.shared_ok_col] == True].copy()
+        opid_oil_counts = merged.groupby(args.op_id_col)["_oil_norm"].nunique()
+        valid_shared_opids = opid_oil_counts[opid_oil_counts >= 2].index
+        merged = merged[merged[args.op_id_col].isin(valid_shared_opids)].copy()
+
+    # Ensure numeric
+    numeric_cols = [
+        args.col_p_suc, args.col_T_suc, args.col_p_out, args.col_T_amb,
+        args.col_speed, args.col_m_meas, args.col_P_meas,
+    ]
+    if args.col_T_dis in merged.columns:
+        numeric_cols.append(args.col_T_dis)
+    if args.col_T_oil_sump in merged.columns:
+        numeric_cols.append(args.col_T_oil_sump)
+
+    for col in numeric_cols:
+        if col in merged.columns:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce")
+
+    merged = merged.dropna(
+        subset=[args.col_p_suc, args.col_T_suc, args.col_p_out, args.col_T_amb,
+                args.col_speed, args.col_m_meas, args.col_P_meas]
+    ).reset_index(drop=True)
+
+    if merged.empty:
+        raise ValueError("No usable rows left after merging and filtering.")
+
+    return merged
+
+
+# =========================================================
+# Data loading: LEGACY mode (raw CSV + optional split)
+# =========================================================
+def load_legacy_mode(args) -> pd.DataFrame:
+    """Load raw dataset CSV and optionally attach split info."""
+    df = pd.read_csv(args.csv, sep=args.sep, header=args.header, decimal=args.decimal)
+
+    if args.source_row_col not in df.columns:
+        df.insert(0, args.source_row_col, np.arange(len(df), dtype=int))
+
+    # Filter by oil
+    oil_sel = norm_oil(args.oil)
+    if oil_sel != "all":
+        if args.oil_col not in df.columns:
+            raise ValueError(f"Oil column '{args.oil_col}' not found in CSV.")
+        df = df[df[args.oil_col].astype(str).apply(norm_oil) == oil_sel].copy()
+
+    required = [args.col_p_suc, args.col_T_suc, args.col_p_out, args.col_T_amb,
+                args.col_speed, args.col_m_meas, args.col_P_meas]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"CSV missing required columns: {missing}")
+
+    df = df.dropna(subset=required).reset_index(drop=True)
+
+    if args.filtered_row_col not in df.columns:
+        df.insert(1, args.filtered_row_col, np.arange(len(df), dtype=int))
+
+    # Attach split info from legacy split CSV (fit_predictions CSV)
+    if args.split_csv is not None:
+        split_df = pd.read_csv(args.split_csv)
+
+        if "is_train" in split_df.columns:
+            idx_col = args.legacy_split_idx_col
+            if idx_col in split_df.columns:
+                tmp = split_df[[idx_col, "is_train"]].copy()
+                tmp["is_train"] = tmp["is_train"].apply(parse_bool_like)
+
+                split_idx_numeric = pd.to_numeric(tmp[idx_col], errors="coerce")
+                if split_idx_numeric.notna().all():
+                    max_idx = int(split_idx_numeric.max())
+                    merge_key = args.filtered_row_col if max_idx < len(df) else args.source_row_col
+                else:
+                    merge_key = args.filtered_row_col
+
+                df = df.merge(
+                    tmp.rename(columns={idx_col: merge_key}),
+                    on=merge_key,
+                    how="left",
+                )
+
+            # Map is_train to split_role
+            if "is_train" in df.columns:
+                df[args.split_role_col] = df["is_train"].apply(
+                    lambda x: "train" if x else "validation"
+                )
+            else:
+                df[args.split_role_col] = ""
+
+        elif args.split_role_col in split_df.columns:
+            # New-style split CSV used in legacy mode
+            if args.op_id_col in split_df.columns and args.op_id_col in df.columns:
+                sp = split_df[[args.op_id_col, args.split_role_col]].copy()
+                sp[args.split_role_col] = sp[args.split_role_col].apply(parse_split_role)
+                df = df.merge(sp, on=args.op_id_col, how="left")
+            else:
+                df[args.split_role_col] = ""
+        else:
+            df[args.split_role_col] = ""
+    else:
+        df[args.split_role_col] = ""
+
+    # Fill NaN split roles
+    if args.split_role_col in df.columns:
+        df[args.split_role_col] = df[args.split_role_col].fillna("")
+
+    df["_oil_norm"] = df[args.oil_col].astype(str).map(norm_oil) if args.oil_col in df.columns else ""
+
+    if df.empty:
+        raise ValueError("No valid rows after filtering.")
+
+    return df
+
+
+# =========================================================
+# Row selection by split_role
+# =========================================================
+def select_rows(df: pd.DataFrame, mode: str, split_role_col: str) -> pd.DataFrame:
+    m = str(mode).lower().strip()
+
+    if m == "all":
+        out = df.copy()
+    elif m in {"validation_only", "exclude_train"}:
+        out = df[df[split_role_col] == "validation"].copy()
+    elif m == "train_only":
+        out = df[df[split_role_col] == "train"].copy()
+    else:
+        raise ValueError("Unknown --selection_mode. Use: validation_only | train_only | all")
+
+    out = out.reset_index(drop=True)
+    if out.empty:
+        raise ValueError(f"No rows selected for selection_mode='{mode}'.")
+    return out
+
+
+# =========================================================
+# Runtime bundle (same pattern as GA script)
+# =========================================================
+def build_validation_bundle(
+    model: str,
+    oil_names: list[str],
+    med,
+    refrigerant_name: str,
+    N_max_hz: float,
+    V_h_m3: float,
+    params: dict,
+):
+    """Build one compressor per oil (or one 'single' for original model)."""
+    m = str(model).lower().strip()
+    bundle = {}
+
+    if m in ("orig", "original"):
+        comp = make_compressor(
+            model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
+            params=params, refrigerant_name=refrigerant_name, oil_name=None,
+        )
+        comp.med_prop = med
+        if hasattr(comp, "debug_enabled"):
+            comp.debug_enabled = True
+
+        bundle["single"] = {
+            "comp": comp,
+            "inputs": SimpleInputs(control=Control(n=1e-6), T_amb=298.15),
+            "fs_state": FlowsheetState(),
+        }
+        return bundle
+
+    # Modified model: one compressor per oil
+    for oil_name in oil_names:
+        comp = make_compressor(
+            model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
+            params=params, refrigerant_name=refrigerant_name, oil_name=oil_name,
+        )
+        comp.med_prop = med
+        if hasattr(comp, "debug_enabled"):
+            comp.debug_enabled = True
+
+        bundle[norm_oil(oil_name)] = {
+            "comp": comp,
+            "inputs": SimpleInputs(control=Control(n=1e-6), T_amb=298.15),
+            "fs_state": FlowsheetState(),
+        }
+
+    return bundle
+
+
+def get_bundle_entry(bundle: dict, model: str, oil_norm: str):
+    m = str(model).lower().strip()
+    if m in ("orig", "original"):
+        return bundle["single"]
+    return bundle[oil_norm]
+
+
+# =========================================================
+# State / loss extraction helpers
+# =========================================================
 def _add_compact_state(rec: dict, prefix: str, st) -> None:
     if st is None:
         rec[f"{prefix}_p_bar"] = float("nan")
@@ -130,311 +574,311 @@ def _add_compact_state(rec: dict, prefix: str, st) -> None:
     rec[f"{prefix}_rho_kgpm3"] = rho
 
 
-def read_dataset_csv(path: Path, sep: str, header: int, decimal: str) -> pd.DataFrame:
-    df = pd.read_csv(path, sep=sep, header=header, decimal=decimal)
-    df.insert(0, "source_row_index", np.arange(len(df), dtype=int))
-    return df
+def _extract_internal_states(rec: dict, comp) -> None:
+    """Extract all internal thermodynamic states from the compressor."""
+    for prefix, attr in [
+        ("st_in", "state_inlet"),
+        ("c1", "state_c_1"),
+        ("c3", "state_c_3"),
+        ("c4", "state_c_4"),
+        ("c5", "state_c_5"),
+        ("st_out", "state_outlet"),
+    ]:
+        _add_compact_state(rec, prefix, getattr(comp, attr, None))
 
 
-def load_params_csv(path: Path):
-    df = pd.read_csv(path)
-    if len(df) != 1:
-        raise ValueError("Params CSV must contain exactly one row.")
-    row = df.iloc[0].to_dict()
+def _extract_loss_terms(rec: dict, comp, model: str) -> None:
+    """Extract loss terms. For modified model, includes extended friction terms."""
+    # Common terms
+    rec["W_dot_int_W"] = _finite(getattr(comp, "W_dot_int", np.nan))
+    rec["W_dot_loss_W"] = _finite(getattr(comp, "W_dot_loss", np.nan))
 
-    params = DEFAULT_PARAMS.copy()
-    for k in PARAM_NAMES:
-        if k in row and pd.notna(row[k]):
-            params[k] = float(row[k])
+    W_int = rec["W_dot_int_W"]
+    W_loss = rec["W_dot_loss_W"]
+    W_total = W_int + W_loss if (np.isfinite(W_int) and np.isfinite(W_loss)) else float("nan")
+    rec["W_dot_int_plus_loss_W"] = W_total
+    rec["W_dot_loss_share"] = (W_loss / W_total) if (np.isfinite(W_total) and W_total > 0) else float("nan")
 
-    if "f_ref" in row and pd.notna(row["f_ref"]):
-        params["f_ref"] = float(row["f_ref"])
+    # Load-dependent and speed-dependent terms
+    rec["W_dot_loss_load_W"] = _finite(getattr(comp, "W_dot_loss_load", np.nan))
+    rec["W_dot_loss_ref_term_W"] = _finite(getattr(comp, "W_dot_loss_ref_term", np.nan))
 
-    meta = {
-        "oil": row.get("oil", None),
-        "refrigerant": row.get("refrigerant", None),
-        "model": row.get("model", None),
-        "error_sum_sq": row.get("error_sum_sq", None),
-        "n_train": row.get("n_train", None),
-        "n_points_total": row.get("n_points_total", None),
-        "use_Tdis": row.get("use_Tdis", None),
-        "Tdis_norm_K": row.get("Tdis_norm_K", 50.0),
-        "seed": row.get("seed", None),
-        "population": row.get("population", None),
-        "elite_frac": row.get("elite_frac", None),
-        "random_keep_prob": row.get("random_keep_prob", None),
-        "mutation_prob_param": row.get("mutation_prob_param", None),
-        "generations": row.get("generations", None),
-        "n_jobs": row.get("n_jobs", None),
-    }
-
-    return params, meta
-
-
-def pick_model(model_name: str, N_max_hz: float, V_h_m3: float, parameters: dict):
-    m = str(model_name).lower().strip()
-    if m in ("orig", "original"):
-        return Molinaroli_2017_Compressor(N_max=N_max_hz, V_h=V_h_m3, parameters=parameters)
+    # Modified model extended terms
+    m = str(model).lower().strip()
     if m in ("mod", "modified"):
-        return Molinaroli_2017_Compressor_Modified(N_max=N_max_hz, V_h=V_h_m3, parameters=parameters)
-    raise ValueError("Unknown --model. Use: original | modified")
+        rec["W_dot_loss_fric_W"] = _finite(getattr(comp, "W_dot_loss_fric", np.nan))
+        rec["T_oil_sump_calc_C"] = k_to_c(_finite(getattr(comp, "T_oil_sump", np.nan)))
+        rec["mu_oil_mPas"] = _finite(getattr(comp, "mu_oil", np.nan))
+        rec["mu_mix_eff_Pas"] = _finite(getattr(comp, "mu_mix_eff", np.nan))
+
+    T_wall = _finite(getattr(comp, "T_w", np.nan))
+    rec["T_wall_C"] = k_to_c(T_wall) if np.isfinite(T_wall) else float("nan")
 
 
-def compute_m_dot_ref(med: RefProp, V_h_m3: float) -> float:
-    st = med.calc_state("TQ", T_REF, Q_REF)
-    return float(st.d) * float(V_h_m3) * float(F_REF)
+def _fill_nan_loss_terms(rec: dict, model: str) -> None:
+    """Fill loss term columns with NaN on failure."""
+    for col in [
+        "W_dot_int_W", "W_dot_loss_W", "W_dot_int_plus_loss_W", "W_dot_loss_share",
+        "W_dot_loss_load_W", "W_dot_loss_ref_term_W", "T_wall_C",
+    ]:
+        rec[col] = float("nan")
+
+    m = str(model).lower().strip()
+    if m in ("mod", "modified"):
+        for col in ["W_dot_loss_fric_W", "T_oil_sump_calc_C", "mu_oil_mPas", "mu_mix_eff_Pas"]:
+            rec[col] = float("nan")
 
 
-def apply_filters(df: pd.DataFrame, args) -> pd.DataFrame:
-    out = df.copy()
-
-    oil_arg = args.oil.strip().lower()
-    if oil_arg != "all":
-        if args.oil_col not in out.columns:
-            raise ValueError(f"--oil was set but oil column '{args.oil_col}' not found in CSV.")
-        out = out[out[args.oil_col].astype(str).apply(norm_oil) == norm_oil(oil_arg)]
-
-    required = [args.col_p_suc, args.col_T_suc, args.col_p_out, args.col_T_amb, args.col_speed]
-    missing = [c for c in required if c not in out.columns]
-    if missing:
-        raise ValueError(f"CSV missing required columns: {missing}")
-
-    out = out.dropna(subset=required).copy()
-    out = out.reset_index(drop=True)
-    out.insert(1, "filtered_row_index", np.arange(len(out), dtype=int))
-
-    if args.max_rows is not None:
-        out = out.head(args.max_rows).copy()
-        out = out.reset_index(drop=True)
-        out["filtered_row_index"] = np.arange(len(out), dtype=int)
-
-    if len(out) == 0:
-        raise ValueError("No valid rows after filtering and dropping NaNs.")
-
-    return out
-
-
-def read_split_csv(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-
-def attach_split_info(df: pd.DataFrame, split_df: pd.DataFrame, idx_col: str, is_train_col: str) -> pd.DataFrame:
-    if idx_col not in split_df.columns:
-        raise ValueError(f"Split CSV missing idx column '{idx_col}'.")
-    if is_train_col not in split_df.columns:
-        raise ValueError(f"Split CSV missing training flag column '{is_train_col}'.")
-
-    tmp = split_df[[idx_col, is_train_col]].copy()
-    tmp = tmp.rename(columns={idx_col: "split_idx", is_train_col: "is_train"})
-
-    merged = df.copy()
-
-    split_idx_numeric = pd.to_numeric(tmp["split_idx"], errors="coerce")
-    if split_idx_numeric.notna().all() and len(df) > 0:
-        max_idx = int(split_idx_numeric.max())
-        if max_idx < len(df):
-            merged = merged.merge(tmp, left_on="filtered_row_index", right_on="split_idx", how="left")
-        else:
-            merged = merged.merge(tmp, left_on="source_row_index", right_on="split_idx", how="left")
-    else:
-        merged = merged.merge(tmp, left_on="filtered_row_index", right_on="split_idx", how="left")
-
-    merged["is_train"] = merged["is_train"].apply(_truthy) if "is_train" in merged.columns else False
-    return merged
-
-
-def select_validation_rows(df: pd.DataFrame, mode: str) -> pd.DataFrame:
-    m = str(mode).lower().strip()
-    if m == "all":
-        out = df.copy()
-    elif m in {"validation_only", "exclude_train"}:
-        if "is_train" not in df.columns:
-            raise ValueError("selection_mode requires split information, but no split file was provided.")
-        out = df[~df["is_train"]].copy()
-    elif m == "train_only":
-        if "is_train" not in df.columns:
-            raise ValueError("selection_mode requires split information, but no split file was provided.")
-        out = df[df["is_train"]].copy()
-    else:
-        raise ValueError("Unknown --selection_mode. Use: validation_only | train_only | all")
-
-    out = out.reset_index(drop=True)
-    if len(out) == 0:
-        raise ValueError("No rows selected for validation.")
-    return out
-
-
+# =========================================================
+# Summary statistics
+# =========================================================
 def summarize_results(out_df: pd.DataFrame, args, params_meta: dict) -> pd.DataFrame:
     ok = out_df[out_df["success"]].copy()
 
-    def _mean(col):
-        return float(ok[col].mean()) if col in ok.columns and ok[col].notna().any() else np.nan
-
-    def _mae(col):
+    def _stat(col, func):
         if col in ok.columns and ok[col].notna().any():
-            return float(ok[col].abs().mean())
+            return float(func(ok[col].dropna()))
         return np.nan
 
-    def _rmse(col):
+    def _share(col, thr):
         if col in ok.columns and ok[col].notna().any():
-            return float(np.sqrt(np.mean(np.square(ok[col].dropna()))))
+            return float((ok[col].dropna().abs() <= thr).mean())
         return np.nan
 
-    def _share_rel(col, thr):
-        if col in ok.columns and ok[col].notna().any():
-            s = ok[col].dropna().abs()
-            return float((s <= thr).mean())
-        return np.nan
-
-    def _share_abs(col, thr):
-        if col in ok.columns and ok[col].notna().any():
-            s = ok[col].dropna().abs()
-            return float((s <= thr).mean())
-        return np.nan
+    params_oil = params_meta.get("oil", "unknown")
 
     summary = {
         "model": args.model,
-        "oil": args.oil,
+        "params_oil": params_oil,
+        "validation_oil": args.oil,
+        "cross_validation": str(norm_oil(str(params_oil)) != norm_oil(args.oil)),
         "refrigerant": args.refrigerant,
         "selection_mode": args.selection_mode,
         "n_selected_points": int(len(out_df)),
         "n_successful_points": int(out_df["success"].sum()),
         "n_failed_points": int((~out_df["success"]).sum()),
-        "n_train_from_params": params_meta.get("n_train", np.nan),
-        "n_points_total_from_params": params_meta.get("n_points_total", np.nan),
-        "ga_error_sum_sq_train": params_meta.get("error_sum_sq", np.nan),
-        "james_Tdis_norm_K": params_meta.get("Tdis_norm_K", np.nan),
-        # signed means
-        "mean_e_m_rel": _mean("e_m_rel"),
-        "mean_e_P_rel": _mean("e_P_rel"),
-        "mean_e_T_dis_K": _mean("e_T_dis_K"),
-        # MAE / RMSE
-        "mae_e_m_rel": _mae("e_m_rel"),
-        "mae_e_P_rel": _mae("e_P_rel"),
-        "mae_e_T_dis_K": _mae("e_T_dis_K"),
-        "rmse_e_m_rel": _rmse("e_m_rel"),
-        "rmse_e_P_rel": _rmse("e_P_rel"),
-        "rmse_e_T_dis_K": _rmse("e_T_dis_K"),
-        # James-style averages
-        "mean_james_m_sq": _mean("james_m_sq"),
-        "mean_james_P_sq": _mean("james_P_sq"),
-        "mean_james_T_sq": _mean("james_T_sq"),
-        "james_error_mean": _mean("james_error_point"),
-        "james_error_sum": float(ok["james_error_point"].sum()) if "james_error_point" in ok.columns else np.nan,
-        # threshold shares
-        "share_m_within_3pct": _share_rel("e_m_rel", 0.03),
-        "share_P_within_2pct": _share_rel("e_P_rel", 0.02),
-        "share_P_within_4pct": _share_rel("e_P_rel", 0.04),
-        "share_Tdis_within_3K": _share_abs("e_T_dis_K", 3.0),
-        "share_Tdis_within_4K": _share_abs("e_T_dis_K", 4.0),
-        "share_Tdis_within_5K": _share_abs("e_T_dis_K", 5.0),
+        "Tdis_norm_K": float(params_meta.get("Tdis_norm_K", 50.0) or 50.0),
+
+        # Signed means
+        "mean_e_m_rel": _stat("e_m_rel", np.mean),
+        "mean_e_P_rel": _stat("e_P_rel", np.mean),
+        "mean_e_T_dis_K": _stat("e_T_dis_K", np.mean),
+
+        # MAE
+        "mae_e_m_rel": _stat("e_m_rel", lambda s: s.abs().mean()),
+        "mae_e_P_rel": _stat("e_P_rel", lambda s: s.abs().mean()),
+        "mae_e_T_dis_K": _stat("e_T_dis_K", lambda s: s.abs().mean()),
+
+        # RMSE
+        "rmse_e_m_rel": _stat("e_m_rel", lambda s: np.sqrt(np.mean(s**2))),
+        "rmse_e_P_rel": _stat("e_P_rel", lambda s: np.sqrt(np.mean(s**2))),
+        "rmse_e_T_dis_K": _stat("e_T_dis_K", lambda s: np.sqrt(np.mean(s**2))),
+
+        # James-style
+        "mean_james_m_sq": _stat("james_m_sq", np.mean),
+        "mean_james_P_sq": _stat("james_P_sq", np.mean),
+        "mean_james_T_sq": _stat("james_T_sq", np.mean),
+        "james_error_mean": _stat("james_error_point", np.mean),
+        "james_error_sum": _stat("james_error_point", np.sum),
+
+        # Threshold shares
+        "share_m_within_3pct": _share("e_m_rel", 0.03),
+        "share_m_within_4pct": _share("e_m_rel", 0.04),
+        "share_m_within_5pct": _share("e_m_rel", 0.05),
+        "share_P_within_3pct": _share("e_P_rel", 0.03),
+        "share_P_within_4pct": _share("e_P_rel", 0.04),
+        "share_P_within_5pct": _share("e_P_rel", 0.05),
+        "share_Tdis_within_3K": _share("e_T_dis_K", 3.0),
+        "share_Tdis_within_4K": _share("e_T_dis_K", 4.0),
+        "share_Tdis_within_5K": _share("e_T_dis_K", 5.0),
     }
     return pd.DataFrame([summary])
 
 
+# =========================================================
+# Main
+# =========================================================
 def main():
     ap = argparse.ArgumentParser(
-        description="Validation script for Molinaroli compressor models using fitted parameters and split files."
+        description="Validation script for Molinaroli compressor models with cross-validation support."
     )
-    ap.add_argument("--csv", required=True, help="Dataset CSV path (units row + header row).")
-    ap.add_argument("--params_csv", required=True, help="ONE-ROW fitted parameter CSV from GA fitting.")
-    ap.add_argument("--split_csv", default=None, help="Optional split CSV from fitting (e.g. idx,is_train,...).")
 
-    ap.add_argument("--out_detail", default=None, help="Output CSV for validated points.")
-    ap.add_argument("--out_summary", default=None, help="Output CSV for validation summary.")
-
-    ap.add_argument("--model", default="auto", help="original | modified | auto (from params_csv)")
-    ap.add_argument("--refrigerant", default="auto", help="RefProp fluid name or auto from params_csv")
-    ap.add_argument("--oil", default="auto", help="LPG100 | LPG68 | all | auto (from params_csv)")
-
-    ap.add_argument("--N_max_rpm", type=float, default=7200.0)
-    ap.add_argument("--V_h_cm3", type=float, default=30.7)
-
+    # --- Input mode A: new (op_rows + split) ---
+    ap.add_argument("--op_rows_csv", type=Path, default=None,
+                    help="Path to operating_points_rows.csv (new mode)")
+    # --- Input mode B: legacy (raw CSV) ---
+    ap.add_argument("--csv", type=Path, default=None,
+                    help="Path to raw dataset CSV (legacy mode)")
     ap.add_argument("--sep", default=";")
     ap.add_argument("--decimal", default=",")
     ap.add_argument("--header", type=int, default=1)
 
+    # --- Shared: split info ---
+    ap.add_argument("--split_csv", type=Path, default=None,
+                    help="Split template CSV (new mode) or fit_predictions CSV (legacy mode)")
+
+    # --- Parameters ---
+    ap.add_argument("--params_csv", required=True, type=Path,
+                    help="One-row fitted parameter CSV from GA fitting")
+
+    # --- Model / fluid ---
+    ap.add_argument("--model", default="auto",
+                    help="original | modified | auto (from params_csv)")
+    ap.add_argument("--refrigerant", default="auto",
+                    help="RefProp fluid name or auto (from params_csv)")
+    ap.add_argument("--oil", default="auto",
+                    help="LPG68 | LPG100 | all | auto. Controls which DATA is validated.")
+
+    # --- Compressor geometry ---
+    ap.add_argument("--N_max_rpm", type=float, default=7200.0)
+    ap.add_argument("--V_h_cm3", type=float, default=30.7)
+
+    # --- Column names ---
+    ap.add_argument("--op_id_col", default=OP_ID_COL_DEFAULT)
     ap.add_argument("--oil_col", default=OIL_COL_DEFAULT)
+    ap.add_argument("--source_row_col", default=SOURCE_ROW_COL_DEFAULT)
+    ap.add_argument("--filtered_row_col", default=FILTERED_ROW_COL_DEFAULT)
+    ap.add_argument("--split_role_col", default=SPLIT_ROLE_COL_DEFAULT)
+    ap.add_argument("--shared_ok_col", default=SHARED_OK_COL_DEFAULT)
+    ap.add_argument("--split_note_col", default=SPLIT_NOTE_COL_DEFAULT)
+
     ap.add_argument("--col_p_suc", default=P_SUC_COL_DEFAULT)
     ap.add_argument("--col_T_suc", default=T_SUC_COL_DEFAULT)
     ap.add_argument("--col_p_out", default=P_OUT_COL_DEFAULT)
     ap.add_argument("--col_T_amb", default=T_AMB_COL_DEFAULT)
     ap.add_argument("--col_speed", default=SPEED_COL_DEFAULT)
     ap.add_argument("--col_T_oil_sump", default=T_OIL_SUMP_COL_DEFAULT)
-    ap.add_argument("--col_T_dis_meas", default=T_DIS_MEAS_COL_DEFAULT)
+    ap.add_argument("--col_T_dis", default=T_DIS_MEAS_COL_DEFAULT)
     ap.add_argument("--col_m_meas", default=M_FLOW_MEAS_COL_DEFAULT)
     ap.add_argument("--col_P_meas", default=P_EL_MEAS_COL_DEFAULT)
-    ap.add_argument("--max_rows", type=int, default=None)
 
-    ap.add_argument(
-        "--selection_mode",
-        default="validation_only",
-        choices=["validation_only", "train_only", "all"],
-        help="Which points to validate: validation_only (default), train_only, or all."
-    )
-    ap.add_argument("--split_idx_col", default="idx", help="Row index column in split CSV.")
-    ap.add_argument("--split_train_col", default="is_train", help="Train flag column in split CSV.")
+    # --- Legacy split ---
+    ap.add_argument("--legacy_split_idx_col", default="idx",
+                    help="Row index column in legacy split CSV")
+
+    # --- Selection ---
+    ap.add_argument("--selection_mode", default="all",
+                    choices=["validation_only", "train_only", "all"],
+                    help="Which points to validate.")
+
+    # --- Output ---
+    ap.add_argument("--out_dir", default="results/validation",
+                    help="Output directory for detail and summary CSVs")
 
     args = ap.parse_args()
 
-    csv_path = Path(args.csv)
-    params_path = Path(args.params_csv)
-    split_path = Path(args.split_csv) if args.split_csv else None
-    if not csv_path.exists():
-        raise FileNotFoundError(csv_path)
-    if not params_path.exists():
-        raise FileNotFoundError(params_path)
-    if split_path is not None and not split_path.exists():
-        raise FileNotFoundError(split_path)
+    # -------------------------
+    # Determine input mode
+    # -------------------------
+    if args.op_rows_csv is not None and args.csv is not None:
+        raise ValueError("Specify either --op_rows_csv (new mode) or --csv (legacy mode), not both.")
+    if args.op_rows_csv is None and args.csv is None:
+        raise ValueError("Specify either --op_rows_csv (new mode) or --csv (legacy mode).")
 
-    params_base, params_meta = load_params_csv(params_path)
+    use_new_mode = args.op_rows_csv is not None
+
+    # -------------------------
+    # Validate file existence
+    # -------------------------
+    if use_new_mode and not args.op_rows_csv.exists():
+        raise FileNotFoundError(args.op_rows_csv)
+    if not use_new_mode and not args.csv.exists():
+        raise FileNotFoundError(args.csv)
+    if not args.params_csv.exists():
+        raise FileNotFoundError(args.params_csv)
+    if args.split_csv is not None and not args.split_csv.exists():
+        raise FileNotFoundError(args.split_csv)
+
+    # -------------------------
+    # Load params (need model info first)
+    # -------------------------
+    # Peek at params to resolve "auto" values
+    params_peek = pd.read_csv(args.params_csv).iloc[0].to_dict()
 
     if args.model == "auto":
-        args.model = str(params_meta.get("model") or "original")
+        args.model = str(params_peek.get("model", "original"))
     if args.refrigerant == "auto":
-        args.refrigerant = str(params_meta.get("refrigerant") or "PROPANE")
+        args.refrigerant = str(params_peek.get("refrigerant", "PROPANE"))
     if args.oil == "auto":
-        args.oil = str(params_meta.get("oil") or "all")
+        args.oil = str(params_peek.get("oil", "all"))
 
-    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    Path("results").mkdir(parents=True, exist_ok=True)
-    if args.out_detail is None:
-        args.out_detail = str(Path("results") / f"validation_points_{str(args.oil).lower()}_{str(args.model).lower()}_{ts}.csv")
-    if args.out_summary is None:
-        args.out_summary = str(Path("results") / f"validation_summary_{str(args.oil).lower()}_{str(args.model).lower()}_{ts}.csv")
+    params, params_meta = load_params_csv(args.params_csv, args.model)
 
-    out_detail_path = Path(args.out_detail)
-    out_summary_path = Path(args.out_summary)
-    out_detail_path.parent.mkdir(parents=True, exist_ok=True)
-    out_summary_path.parent.mkdir(parents=True, exist_ok=True)
-
-    raw_df = read_dataset_csv(csv_path, sep=args.sep, header=args.header, decimal=args.decimal)
-    df = apply_filters(raw_df, args)
-
-    if split_path is not None:
-        split_df = read_split_csv(split_path)
-        df = attach_split_info(df, split_df, idx_col=args.split_idx_col, is_train_col=args.split_train_col)
-        selected_df = select_validation_rows(df, args.selection_mode)
+    # -------------------------
+    # Load data
+    # -------------------------
+    if use_new_mode:
+        if args.split_csv is None:
+            raise ValueError("New mode (--op_rows_csv) requires --split_csv.")
+        df = load_new_mode(args)
     else:
-        if args.selection_mode != "all":
-            raise ValueError("--selection_mode other than 'all' requires --split_csv.")
-        selected_df = df.copy()
+        df = load_legacy_mode(args)
 
+    # Ensure split_role column exists
+    if args.split_role_col not in df.columns:
+        df[args.split_role_col] = ""
+
+    # -------------------------
+    # Select rows
+    # -------------------------
+    if args.selection_mode != "all" and (df[args.split_role_col] == "").all():
+        raise ValueError(
+            f"--selection_mode='{args.selection_mode}' requires split info, "
+            f"but no split_role data found. Use --split_csv or --selection_mode=all."
+        )
+
+    selected_df = select_rows(df, args.selection_mode, args.split_role_col)
+
+    print(f"  Input mode:       {'new (op_rows + split)' if use_new_mode else 'legacy (raw CSV)'}")
+    print(f"  Model:            {args.model}")
+    print(f"  Params oil:       {params_meta.get('oil', 'unknown')}")
+    print(f"  Validation oil:   {args.oil}")
+    print(f"  Refrigerant:      {args.refrigerant}")
+    print(f"  Selection mode:   {args.selection_mode}")
+    print(f"  Total rows:       {len(df)}")
+    print(f"  Selected rows:    {len(selected_df)}")
+
+    # -------------------------
+    # RefProp + compressor setup (single shared instance)
+    # -------------------------
     N_max_hz = rpm_to_hz(args.N_max_rpm)
     V_h_m3 = float(args.V_h_cm3) * 1e-6
+
     med = RefProp(fluid_name=args.refrigerant)
 
-    params_base["f_ref"] = F_REF
-    params_base["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
+    params["f_ref"] = F_REF
+    params["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
+    print(f"  m_dot_ref:        {params['m_dot_ref'] * 1e3:.4f} g/s")
 
-    comp = pick_model(args.model, N_max_hz=N_max_hz, V_h_m3=V_h_m3, parameters=params_base)
-    comp.med_prop = med
-    comp.debug_enabled = True
+    # Determine unique oils in selected data
+    if "_oil_norm" in selected_df.columns:
+        unique_oils = sorted(selected_df["_oil_norm"].unique())
+    elif args.oil_col in selected_df.columns:
+        unique_oils = sorted(selected_df[args.oil_col].astype(str).apply(norm_oil).unique())
+    else:
+        unique_oils = [norm_oil(args.oil)]
 
+    # Map normalized oil names back to display names for compressor construction
+    oil_display_map = {"lpg68": "LPG68", "lpg100": "LPG100"}
+    unique_oil_display = [oil_display_map.get(o, o) for o in unique_oils]
+
+    bundle = build_validation_bundle(
+        model=args.model,
+        oil_names=unique_oil_display,
+        med=med,
+        refrigerant_name=args.refrigerant,
+        N_max_hz=N_max_hz,
+        V_h_m3=V_h_m3,
+        params=params,
+    )
+
+    # -------------------------
+    # Validation loop
+    # -------------------------
+    has_T_dis = args.col_T_dis in selected_df.columns
+    has_T_oil = args.col_T_oil_sump in selected_df.columns
     has_m_meas = args.col_m_meas in selected_df.columns
     has_P_meas = args.col_P_meas in selected_df.columns
-    has_T_oil = args.col_T_oil_sump in selected_df.columns
-    has_T_dis_meas = args.col_T_dis_meas in selected_df.columns
     tdis_norm_k = float(params_meta.get("Tdis_norm_K", 50.0) or 50.0)
 
     results = []
@@ -445,182 +889,189 @@ def main():
         T_suc_K = c_to_k(row[args.col_T_suc])
         T_amb_K = c_to_k(row[args.col_T_amb])
         f_oper_hz = rpm_to_hz(row[args.col_speed])
-        n_rel = float(max(1e-6, min(1.0, f_oper_hz / N_max_hz)))
+        n_rel = _clamp01(f_oper_hz / N_max_hz)
 
+        # Oil info
+        if "_oil_norm" in row.index:
+            oil_norm = str(row["_oil_norm"])
+        elif args.oil_col in row.index:
+            oil_norm = norm_oil(str(row[args.oil_col]))
+        else:
+            oil_norm = norm_oil(args.oil)
+
+        oil_display = str(row[args.oil_col]) if args.oil_col in row.index else args.oil
+
+        # Calculate superheat at compressor inlet
         try:
             st_sat = med.calc_state("PQ", float(p_suc_pa), 1.0)
-            T_sat_suc_K = _finite(getattr(st_sat, "T", np.nan))
-            T_sat_suc_C = k_to_c(T_sat_suc_K) if np.isfinite(T_sat_suc_K) else float("nan")
+            T_sat_suc_C = k_to_c(_finite(st_sat.T))
             superheat_C = float(row[args.col_T_suc]) - T_sat_suc_C if np.isfinite(T_sat_suc_C) else float("nan")
         except Exception:
+            T_sat_suc_C = float("nan")
             superheat_C = float("nan")
 
-        try:
-            n_abs = float(comp.get_n_absolute(n_rel))
-        except Exception:
-            n_abs = float("nan")
-
+        # Build record with input data
         rec = {
-            "source_row_index": int(row["source_row_index"]),
-            "filtered_row_index": int(row["filtered_row_index"]),
-            "idx_from_split": int(row["split_idx"]) if "split_idx" in row and pd.notna(row["split_idx"]) else np.nan,
-            "is_train": bool(row["is_train"]) if "is_train" in row and pd.notna(row["is_train"]) else np.nan,
-            "validated_in_this_run": True,
+            "source_row_index": int(row[args.source_row_col]) if args.source_row_col in row.index and pd.notna(row.get(args.source_row_col)) else np.nan,
+            "filtered_row_index": int(row[args.filtered_row_col]) if args.filtered_row_col in row.index and pd.notna(row.get(args.filtered_row_col)) else np.nan,
+            "op_id": str(row[args.op_id_col]) if args.op_id_col in row.index else "",
+            "split_role": str(row[args.split_role_col]) if args.split_role_col in row.index else "",
+            "split_note": str(row.get(args.split_note_col, "")) if args.split_note_col in row.index else "",
+            "is_train": bool(row.get(args.split_role_col, "") == "train"),
+            "is_validation": bool(row.get(args.split_role_col, "") == "validation"),
             "success": True,
             "error": "",
             "model": args.model,
-            "backend": "RefProp",
+            "params_oil": str(params_meta.get("oil", "unknown")),
+            "oil": oil_display,
+            "oil_norm": oil_norm,
             "refrigerant": args.refrigerant,
-            "oil": str(row[args.oil_col]) if args.oil_col in row.index else "",
-            "p_suc_bar_in": float(row[args.col_p_suc]),
-            "T_suc_C_in": float(row[args.col_T_suc]),
-            "p_out_bar_in": float(row[args.col_p_out]),
-            "T_amb_C_in": float(row[args.col_T_amb]),
-            "superheat_C": float(superheat_C),
-            "N_rpm_in": float(row[args.col_speed]),
-            "f_oper_hz": float(f_oper_hz),
-            "n_rel": float(n_rel),
-            "n_abs_hz": float(n_abs),
-            "T_oil_sump_C_meas": float(row[args.col_T_oil_sump]) if (has_T_oil and pd.notna(row[args.col_T_oil_sump])) else np.nan,
-            "T_dis_meas_C": float(row[args.col_T_dis_meas]) if (has_T_dis_meas and pd.notna(row[args.col_T_dis_meas])) else np.nan,
+            "p_suc_bar": float(row[args.col_p_suc]),
+            "T_suc_C": float(row[args.col_T_suc]),
+            "p_out_bar": float(row[args.col_p_out]),
+            "T_amb_C": float(row[args.col_T_amb]),
+            "N_rpm": float(row[args.col_speed]),
+            "f_oper_hz": f_oper_hz,
+            "n_rel": n_rel,
+            "T_oil_sump_C_meas": float(row[args.col_T_oil_sump]) if (has_T_oil and pd.notna(row.get(args.col_T_oil_sump))) else np.nan,
+            "T_dis_meas_C": float(row[args.col_T_dis]) if (has_T_dis and pd.notna(row.get(args.col_T_dis))) else np.nan,
+            "T_sat_suc_C": T_sat_suc_C,
+            "superheat_C": superheat_C,
+            "pressure_ratio": float(row[args.col_p_out]) / float(row[args.col_p_suc]),
         }
 
-        fs_state = FlowsheetState()
-
+        # Simulate
         try:
+            entry = get_bundle_entry(bundle, args.model, oil_norm)
+            comp = entry["comp"]
+            inputs = entry["inputs"]
+            fs_state = entry["fs_state"]
+
+            inputs.control.n = _clamp01(n_rel)
+            inputs.T_amb = float(T_amb_K)
+
             comp.state_inlet = med.calc_state("PT", float(p_suc_pa), float(T_suc_K))
-            inputs = SimpleInputs(control=Control(n=n_rel), T_amb=float(T_amb_K))
             comp.calc_state_outlet(p_outlet=float(p_out_pa), inputs=inputs, fs_state=fs_state)
 
-            _add_compact_state(rec, "st_in", getattr(comp, "state_inlet", None))
-            _add_compact_state(rec, "c1", getattr(comp, "state_c_1", None))
-            _add_compact_state(rec, "c3", getattr(comp, "state_c_3", None))
-            _add_compact_state(rec, "c4", getattr(comp, "state_c_4", None))
-            _add_compact_state(rec, "c5", getattr(comp, "state_c_5", None))
-            _add_compact_state(rec, "st_out", getattr(comp, "state_outlet", None))
+            m_flow = float(comp.m_flow)
+            P_el = float(comp.P_el)
+            T_dis_K = float(comp.state_outlet.T)
 
-            rec["m_flow_kg_s"] = float(comp.m_flow)
-            rec["m_flow_g_s"] = float(comp.m_flow) * 1000.0
-            rec["P_el_W"] = float(comp.P_el)
+            if not np.isfinite(m_flow) or m_flow <= 0:
+                raise ValueError("Invalid m_flow")
+            if not np.isfinite(P_el) or P_el <= 0:
+                raise ValueError("Invalid P_el")
 
-            T_wall_K = _finite(getattr(comp, "T_w", np.nan))
-            rec["T_wall_C"] = k_to_c(T_wall_K) if np.isfinite(T_wall_K) else float("nan")
+            rec["m_flow_kg_s"] = m_flow
+            rec["m_flow_g_s"] = m_flow * 1e3
+            rec["P_el_W"] = P_el
+            rec["T_dis_calc_C"] = k_to_c(T_dis_K)
 
-            T_dis_K = _finite(getattr(comp.state_outlet, "T", np.nan))
-            rec["T_dis_C"] = k_to_c(T_dis_K) if np.isfinite(T_dis_K) else float("nan")
+            # Internal states
+            _extract_internal_states(rec, comp)
 
-            try:
-                rho3 = float(getattr(comp, "state_c_3").d)
-                h3 = float(getattr(comp, "state_c_3").h)
-                h4 = float(getattr(comp, "state_c_4").h)
-                V_IC = float(params_base["V_IC"])
-                m_dot_3 = rho3 * V_IC * float(n_abs)
-                W_dot_int = m_dot_3 * (h4 - h3)
-                alpha_loss = float(params_base["alpha_loss"])
-                W_dot_loss_ref = float(params_base["W_dot_loss_ref"])
-                W_dot_loss = (W_dot_int * alpha_loss + W_dot_loss_ref * (float(n_abs) / float(F_REF)) ** 2)
-                rec["m_dot_3_kg_s"] = float(m_dot_3)
-                rec["W_dot_int_W"] = float(W_dot_int)
-                rec["W_dot_loss_W"] = float(W_dot_loss)
-                rec["W_dot_int_plus_loss_W"] = float(W_dot_int + W_dot_loss)
-                rec["W_dot_loss_share"] = float(W_dot_loss / (W_dot_int + W_dot_loss)) if (W_dot_int + W_dot_loss) > 0 else float("nan")
-            except Exception:
-                rec["m_dot_3_kg_s"] = np.nan
-                rec["W_dot_int_W"] = np.nan
-                rec["W_dot_loss_W"] = np.nan
-                rec["W_dot_int_plus_loss_W"] = np.nan
-                rec["W_dot_loss_share"] = np.nan
+            # Loss terms
+            _extract_loss_terms(rec, comp, args.model)
 
-            if has_m_meas and pd.notna(row[args.col_m_meas]):
+            # Errors vs measurements
+            if has_m_meas and pd.notna(row.get(args.col_m_meas)):
                 rec["m_meas_g_s"] = float(row[args.col_m_meas])
                 m_meas = gs_to_kgps(row[args.col_m_meas])
-                rec["e_m_rel"] = (rec["m_flow_kg_s"] / m_meas) - 1.0 if m_meas > 0 else np.nan
+                rec["e_m_rel"] = (m_flow / m_meas - 1.0) if m_meas > 0 else np.nan
             else:
                 rec["m_meas_g_s"] = np.nan
                 rec["e_m_rel"] = np.nan
 
-            if has_P_meas and pd.notna(row[args.col_P_meas]):
+            if has_P_meas and pd.notna(row.get(args.col_P_meas)):
                 rec["P_meas_W"] = float(row[args.col_P_meas])
                 P_meas = float(row[args.col_P_meas])
-                rec["e_P_rel"] = (rec["P_el_W"] / P_meas) - 1.0 if P_meas > 0 else np.nan
+                rec["e_P_rel"] = (P_el / P_meas - 1.0) if P_meas > 0 else np.nan
             else:
                 rec["P_meas_W"] = np.nan
                 rec["e_P_rel"] = np.nan
 
-            if np.isfinite(rec.get("T_dis_meas_C", np.nan)) and np.isfinite(rec.get("T_dis_C", np.nan)):
-                rec["e_T_dis_K"] = float(rec["T_dis_C"] - rec["T_dis_meas_C"])
-                rec["e_T_dis_abs_K"] = float(abs(rec["e_T_dis_K"]))
+            if np.isfinite(rec.get("T_dis_meas_C", np.nan)) and np.isfinite(rec.get("T_dis_calc_C", np.nan)):
+                rec["e_T_dis_K"] = rec["T_dis_calc_C"] - rec["T_dis_meas_C"]
             else:
                 rec["e_T_dis_K"] = np.nan
-                rec["e_T_dis_abs_K"] = np.nan
 
-            rec["james_m_sq"] = float(rec["e_m_rel"] ** 2) if np.isfinite(rec.get("e_m_rel", np.nan)) else np.nan
-            rec["james_P_sq"] = float(rec["e_P_rel"] ** 2) if np.isfinite(rec.get("e_P_rel", np.nan)) else np.nan
-            rec["james_T_sq"] = float((rec["e_T_dis_K"] / tdis_norm_k) ** 2) if np.isfinite(rec.get("e_T_dis_K", np.nan)) else np.nan
+            # James error terms
+            rec["james_m_sq"] = rec["e_m_rel"] ** 2 if np.isfinite(rec.get("e_m_rel", np.nan)) else np.nan
+            rec["james_P_sq"] = rec["e_P_rel"] ** 2 if np.isfinite(rec.get("e_P_rel", np.nan)) else np.nan
+            rec["james_T_sq"] = (rec["e_T_dis_K"] / tdis_norm_k) ** 2 if np.isfinite(rec.get("e_T_dis_K", np.nan)) else np.nan
 
             james_terms = [rec["james_m_sq"], rec["james_P_sq"], rec["james_T_sq"]]
-            rec["james_error_point"] = float(np.nansum(james_terms)) if any(np.isfinite(x) for x in james_terms) else np.nan
+            rec["james_error_point"] = (
+                float(np.nansum(james_terms))
+                if any(np.isfinite(x) for x in james_terms)
+                else np.nan
+            )
 
         except Exception as e:
             rec["success"] = False
-            rec["error"] = str(e)
+            rec["error"] = str(e)[:200]
+
+            for col in ["m_flow_kg_s", "m_flow_g_s", "P_el_W", "T_dis_calc_C",
+                        "m_meas_g_s", "e_m_rel", "P_meas_W", "e_P_rel", "e_T_dis_K",
+                        "james_m_sq", "james_P_sq", "james_T_sq", "james_error_point"]:
+                rec[col] = np.nan
+
             for prefix in ["st_in", "c1", "c3", "c4", "c5", "st_out"]:
                 _add_compact_state(rec, prefix, None)
-            for col in [
-                "m_flow_kg_s", "m_flow_g_s", "P_el_W", "T_wall_C", "T_dis_C",
-                "m_dot_3_kg_s", "W_dot_int_W", "W_dot_loss_W", "W_dot_int_plus_loss_W", "W_dot_loss_share",
-                "m_meas_g_s", "e_m_rel", "P_meas_W", "e_P_rel", "e_T_dis_K", "e_T_dis_abs_K",
-                "james_m_sq", "james_P_sq", "james_T_sq", "james_error_point",
-            ]:
-                rec[col] = np.nan
+
+            _fill_nan_loss_terms(rec, args.model)
 
         results.append(rec)
 
+    # -------------------------
+    # Output
+    # -------------------------
     out_df = pd.DataFrame(results)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    input_cols = [
-        "source_row_index", "filtered_row_index", "idx_from_split", "is_train", "validated_in_this_run",
-        "model", "backend", "refrigerant", "oil", "success", "error",
-        "p_suc_bar_in", "T_suc_C_in", "p_out_bar_in", "T_amb_C_in",
-        "T_oil_sump_C_meas", "T_dis_meas_C", "superheat_C", "N_rpm_in", "f_oper_hz", "n_rel", "n_abs_hz",
-    ]
-    state_prefixes = ["st_in", "c1", "c3", "c4", "c5", "st_out"]
-    state_cols = []
-    for p in state_prefixes:
-        for suf in ["_p_bar", "_T_C", "_rho_kgpm3"]:
-            col = f"{p}{suf}"
-            if col in out_df.columns:
-                state_cols.append(col)
-    output_cols = [
-        "m_flow_kg_s", "m_flow_g_s", "P_el_W", "T_wall_C", "T_dis_C",
-        "m_dot_3_kg_s", "W_dot_int_W", "W_dot_loss_W", "W_dot_int_plus_loss_W", "W_dot_loss_share",
-    ]
-    error_cols = [
-        "m_meas_g_s", "e_m_rel", "P_meas_W", "e_P_rel", "e_T_dis_K", "e_T_dis_abs_K",
-        "james_m_sq", "james_P_sq", "james_T_sq", "james_error_point",
-    ]
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    params_oil_tag = norm_oil(str(params_meta.get("oil", "unknown")))
+    val_oil_tag = norm_oil(args.oil)
+    suffix = f"params_{params_oil_tag}_val_{val_oil_tag}_{args.model}_{ts}"
 
-    def _keep_existing(cols):
-        return [c for c in cols if c in out_df.columns]
+    out_detail = out_dir / f"validation_detail_{suffix}.csv"
+    out_summary = out_dir / f"validation_summary_{suffix}.csv"
 
-    ordered = _keep_existing(input_cols) + _keep_existing(state_cols) + _keep_existing(output_cols) + _keep_existing(error_cols)
-    remaining = [c for c in out_df.columns if c not in ordered]
-    out_df = out_df[ordered + remaining]
-    out_df.to_csv(out_detail_path, index=False)
+    out_df.to_csv(out_detail, index=False)
 
     summary_df = summarize_results(out_df, args, params_meta)
-    summary_df.to_csv(out_summary_path, index=False)
+    summary_df.to_csv(out_summary, index=False)
 
+    # -------------------------
+    # Console output
+    # -------------------------
     n_ok = int(out_df["success"].sum())
     n_total = len(out_df)
-    print("\n=== Validation done ===")
-    print(f"oil: {args.oil}, model: {args.model}, refrigerant: {args.refrigerant}, backend: RefProp")
-    print(f"selection_mode: {args.selection_mode}")
-    print(f"points: {n_ok}/{n_total} successful")
-    print(f"params source: {params_path}")
-    print(f"split source: {split_path if split_path else 'None'}")
-    print(f"detail saved: {out_detail_path}")
-    print(f"summary saved: {out_summary_path}")
+
+    print(f"\n=== Validation done ===")
+    print(f"  Points: {n_ok}/{n_total} successful")
+
+    if n_ok > 0:
+        ok = out_df[out_df["success"]]
+        if ok["e_m_rel"].notna().any():
+            m3 = (ok["e_m_rel"].abs() <= 0.03).mean() * 100
+            m4 = (ok["e_m_rel"].abs() <= 0.04).mean() * 100
+            m5 = (ok["e_m_rel"].abs() <= 0.05).mean() * 100
+            print(f"  Mass flow  within ±3%: {m3:.1f}%  |  ±4%: {m4:.1f}%  |  ±5%: {m5:.1f}%")
+        if ok["e_P_rel"].notna().any():
+            P3 = (ok["e_P_rel"].abs() <= 0.03).mean() * 100
+            P4 = (ok["e_P_rel"].abs() <= 0.04).mean() * 100
+            P5 = (ok["e_P_rel"].abs() <= 0.05).mean() * 100
+            print(f"  Power      within ±3%: {P3:.1f}%  |  ±4%: {P4:.1f}%  |  ±5%: {P5:.1f}%")
+        if ok["e_T_dis_K"].notna().any():
+            T3 = (ok["e_T_dis_K"].abs() <= 3.0).mean() * 100
+            T4 = (ok["e_T_dis_K"].abs() <= 4.0).mean() * 100
+            T5 = (ok["e_T_dis_K"].abs() <= 5.0).mean() * 100
+            print(f"  T_dis      within ±3K: {T3:.1f}%  |  ±4K: {T4:.1f}%  |  ±5K: {T5:.1f}%")
+
+    print(f"\n  Detail saved:  {out_detail}")
+    print(f"  Summary saved: {out_summary}")
 
 
 if __name__ == "__main__":

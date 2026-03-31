@@ -2,6 +2,8 @@
 #
 # Genetic Algorithm fitter for Molinaroli compressor models.
 #
+# Supports: original | modified | oil_path
+#
 # Data selection logic:
 # - Training / validation points are not sampled randomly.
 # - Instead, the script reads:
@@ -28,6 +30,7 @@
 #
 # Example:
 #   python scripts/fit_parameters_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model modified --refrigerant PROPANE --population 80 --generations 250 --n_jobs 20 --ind_timeout_s 40 --lsq_max_nfev 20000 --mutation_prob_param 0.30
+#   python scripts/fit_parameters_ga.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --model oil_path --refrigerant PROPANE --population 10 --generations 10 --n_jobs 10 --ind_timeout_s 60 --lsq_max_nfev 20000 --mutation_prob_param 0.30
 
 from __future__ import annotations
 
@@ -51,6 +54,9 @@ import pandas as pd
 from vclibpy.components.compressors import Molinaroli_2017_Compressor
 from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified import (
     Molinaroli_2017_Compressor_Modified,
+)
+from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
+    Molinaroli_2017_Compressor_Oil_Path,
 )
 from vclibpy.datamodels import FlowsheetState
 from vclibpy.media import RefProp
@@ -147,6 +153,20 @@ PARAM_NAMES_MODIFIED = [
     "alpha_fric_tot",
 ]
 
+PARAM_NAMES_OIL_PATH = [
+    "Ua_suc_ref",
+    "Ua_dis_ref",
+    "Ua_amb",
+    "A_tot",
+    "A_dis",
+    "V_IC",
+    "alpha_loss",
+    "W_dot_loss_ref",
+    "alpha_fric_tot",
+    "m_dot_oil_ref",
+    "Ua_suc_oil_ref",
+]
+
 DEFAULT_PARAMS_ORIGINAL = {
     "Ua_suc_ref": 16.05,
     "Ua_dis_ref": 13.96,
@@ -174,7 +194,24 @@ DEFAULT_PARAMS_MODIFIED = {
     "f_ref": F_REF,
 }
 
-LOG_UNIFORM_PARAM_NAMES = {"A_tot", "A_dis"}
+DEFAULT_PARAMS_OIL_PATH = {
+    "Ua_suc_ref": 16.05,
+    "Ua_dis_ref": 13.96,
+    "Ua_amb": 0.36,
+    "A_tot": 9.47e-9,
+    "A_dis": 86.1e-6,
+    "V_IC": 30.7e-6,
+    "alpha_loss": 0.16,
+    "W_dot_loss_ref": 10.0,
+    "alpha_fric_tot": 120.0,
+    "m_dot_oil_ref": 0.001,
+    "Ua_suc_oil_ref": 5.0,
+    "mu_fallback": 5.0,
+    "m_dot_ref": None,
+    "f_ref": F_REF,
+}
+
+LOG_UNIFORM_PARAM_NAMES = {"A_tot", "A_dis", "m_dot_oil_ref"}
 
 
 # =========================================================
@@ -201,6 +238,21 @@ def gs_to_kgps(m):
 # =========================================================
 def norm_oil(s: str) -> str:
     return str(s).strip().lower().replace(" ", "")
+
+
+def _model_key(model: str) -> str:
+    m = str(model).lower().strip()
+    if m in ("orig", "original"):
+        return "original"
+    if m in ("mod", "modified"):
+        return "modified"
+    if m in ("oil_path", "oilpath", "oil"):
+        return "oil_path"
+    raise ValueError("Unknown model. Use: original | modified | oil_path")
+
+
+def _model_needs_oil(model: str) -> bool:
+    return _model_key(model) in ("modified", "oil_path")
 
 
 def parse_bool_like(x) -> bool:
@@ -244,38 +296,40 @@ def _clamp01(x):
 # =========================================================
 # Model helpers
 # =========================================================
-def map_refrigerant_for_modified_model(name: str) -> str:
+def map_refrigerant_for_oil_model(name: str) -> str:
     s = str(name).strip().upper()
     if s in {"PROPANE", "R290", "PROPAN"}:
         return "propane"
     return str(name).strip()
 
 
-def map_oil_for_modified_model(name: str) -> str:
+def map_oil_for_oil_model(name: str) -> str:
     s = norm_oil(name)
     if s == "lpg68":
         return "LPG 68"
     if s == "lpg100":
         return "LPG 100"
-    raise ValueError(f"Unsupported oil for modified model: {name}")
+    raise ValueError(f"Unsupported oil: {name}")
 
 
 def get_param_names(model: str) -> list[str]:
-    m = str(model).lower().strip()
-    if m in ("orig", "original"):
+    k = _model_key(model)
+    if k == "original":
         return list(PARAM_NAMES_ORIGINAL)
-    if m in ("mod", "modified"):
+    if k == "modified":
         return list(PARAM_NAMES_MODIFIED)
-    raise ValueError("Unknown model. Use original | modified")
+    if k == "oil_path":
+        return list(PARAM_NAMES_OIL_PATH)
 
 
 def get_default_params(model: str) -> dict:
-    m = str(model).lower().strip()
-    if m in ("orig", "original"):
+    k = _model_key(model)
+    if k == "original":
         return dict(DEFAULT_PARAMS_ORIGINAL)
-    if m in ("mod", "modified"):
+    if k == "modified":
         return dict(DEFAULT_PARAMS_MODIFIED)
-    raise ValueError("Unknown model. Use original | modified")
+    if k == "oil_path":
+        return dict(DEFAULT_PARAMS_OIL_PATH)
 
 
 def make_compressor(
@@ -286,27 +340,36 @@ def make_compressor(
     refrigerant_name: str,
     oil_name: str | None = None,
 ):
-    m = str(model).lower().strip()
+    k = _model_key(model)
 
-    if m in ("orig", "original"):
+    if k == "original":
         return Molinaroli_2017_Compressor(
             N_max=N_max_hz,
             V_h=V_h_m3,
             parameters=params,
         )
 
-    if m in ("mod", "modified"):
+    if k == "modified":
         if oil_name is None:
             raise ValueError("Modified model requires an oil name.")
         return Molinaroli_2017_Compressor_Modified(
             N_max=N_max_hz,
             V_h=V_h_m3,
-            fluid_name=map_refrigerant_for_modified_model(refrigerant_name),
-            lub_name=map_oil_for_modified_model(oil_name),
+            fluid_name=map_refrigerant_for_oil_model(refrigerant_name),
+            lub_name=map_oil_for_oil_model(oil_name),
             parameters=params,
         )
 
-    raise ValueError("Unknown model. Use original | modified")
+    if k == "oil_path":
+        if oil_name is None:
+            raise ValueError("Oil path model requires an oil name.")
+        return Molinaroli_2017_Compressor_Oil_Path(
+            N_max=N_max_hz,
+            V_h=V_h_m3,
+            fluid_name=map_refrigerant_for_oil_model(refrigerant_name),
+            lub_name=map_oil_for_oil_model(oil_name),
+            parameters=params,
+        )
 
 
 def compute_m_dot_ref(med, V_h_m3: float) -> float:
@@ -523,10 +586,10 @@ def build_runtime_bundle(
     params: dict,
     lsq_max_nfev: int,
 ):
-    m = str(model).lower().strip()
+    k = _model_key(model)
     bundle = {}
 
-    if m in ("orig", "original"):
+    if k == "original":
         comp = make_compressor(
             model=model,
             N_max_hz=N_max_hz,
@@ -552,6 +615,7 @@ def build_runtime_bundle(
         }
         return bundle
 
+    # modified and oil_path both need per-oil compressors
     unique_oils = sorted({r["oil_name"] for r in rows})
     for oil_name in unique_oils:
         comp = make_compressor(
@@ -582,8 +646,8 @@ def build_runtime_bundle(
 
 
 def get_runtime_entry(bundle: dict, model: str, row: dict):
-    m = str(model).lower().strip()
-    if m in ("orig", "original"):
+    k = _model_key(model)
+    if k == "original":
         return bundle["single"]
     return bundle[row["oil_norm"]]
 
@@ -758,9 +822,9 @@ def build_bounds(model: str, V_h_m3: float, vic_lo_scale: float, vic_hi_scale: f
     vic_lo = float(vic_lo_scale) * V_h_m3
     vic_hi = float(vic_hi_scale) * V_h_m3
 
-    m = str(model).lower().strip()
+    k = _model_key(model)
 
-    if m in ("orig", "original"):
+    if k == "original":
         by_name = {
             "Ua_suc_ref": (8.0, 55.0),
             "Ua_dis_ref": (2.0, 20.0),
@@ -771,7 +835,7 @@ def build_bounds(model: str, V_h_m3: float, vic_lo_scale: float, vic_hi_scale: f
             "alpha_loss": (0.10, 0.30),
             "W_dot_loss_ref": (40.0, 175.0),
         }
-    elif m in ("mod", "modified"):
+    elif k == "modified":
         by_name = {
             "Ua_suc_ref": (8.0, 55.0),
             "Ua_dis_ref": (2.0, 20.0),
@@ -783,8 +847,22 @@ def build_bounds(model: str, V_h_m3: float, vic_lo_scale: float, vic_hi_scale: f
             "W_dot_loss_ref": (30.0, 80.0),
             "alpha_fric_tot": (500.0, 900.0),
         }
+    elif k == "oil_path":
+        by_name = {
+            "Ua_suc_ref": (8.0, 55.0),
+            "Ua_dis_ref": (2.0, 20.0),
+            "Ua_amb": (0.1, 3.0),
+            "A_tot": (2e-9, 5e-7),
+            "A_dis": (4e-6, 5e-4),
+            "V_IC": (vic_lo, vic_hi),
+            "alpha_loss": (0.10, 0.30),
+            "W_dot_loss_ref": (30.0, 80.0),
+            "alpha_fric_tot": (500.0, 900.0),
+            "m_dot_oil_ref": (1e-4, 1e-2),
+            "Ua_suc_oil_ref": (0.5, 30.0),
+        }
     else:
-        raise ValueError("Unknown model. Use original | modified")
+        raise ValueError("Unknown model. Use: original | modified | oil_path")
 
     missing = [name for name in param_names if name not in by_name]
     if missing:
@@ -805,7 +883,7 @@ def main():
     ap.add_argument("--split_csv", required=True, type=Path, help="Path to operating_points_split_template.csv")
 
     ap.add_argument("--oil", default="all", help="LPG68 | LPG100 | all")
-    ap.add_argument("--model", default="original", choices=["original", "modified"])
+    ap.add_argument("--model", default="original", choices=["original", "modified", "oil_path"])
     ap.add_argument("--refrigerant", default="PROPANE")
 
     ap.add_argument("--op_id_col", default=OP_ID_COL_DEFAULT)
@@ -852,6 +930,8 @@ def main():
 
     args = ap.parse_args()
 
+    model_key = _model_key(args.model)
+
     if not args.op_rows_csv.exists():
         raise FileNotFoundError(args.op_rows_csv)
     if not args.split_csv.exists():
@@ -882,6 +962,7 @@ def main():
             "No training points found. Fill the split_role column in split CSV with 'train'."
         )
 
+    print(f"  model            = {model_key}")
     print(f"  rows_all         = {len(rows_all)}")
     print(f"  rows_train       = {len(rows_train)}")
     print(f"  rows_validation  = {len(rows_validation)}")
@@ -914,6 +995,12 @@ def main():
         vic_hi_scale=args.vic_hi_scale,
         param_names=param_names,
     )
+
+    print(f"  Fitting {len(param_names)} parameters: {', '.join(param_names)}")
+    for i, name in enumerate(param_names):
+        lo, hi = bounds[i]
+        log_tag = " (log-uniform)" if name in LOG_UNIFORM_PARAM_NAMES else ""
+        print(f"    {name}: [{lo:.6g}, {hi:.6g}]{log_tag}")
 
     # -------------------------
     # Initial population
@@ -1232,7 +1319,7 @@ def main():
     # -------------------------
     # Save results
     # -------------------------
-    suffix = f"{str(args.oil).lower()}_{args.model}_{tag}_{run_id}"
+    suffix = f"{str(args.oil).lower()}_{model_key}_{tag}_{run_id}"
 
     fitted_row = {k: float(v) for k, v in zip(param_names, best_x)}
     fitted_row.update(
@@ -1243,7 +1330,7 @@ def main():
             "m_dot_ref_definition": "rho_sat(T=273.15K,Q=1)*V_h_geo*f_ref",
             "oil": str(args.oil),
             "refrigerant": str(args.refrigerant),
-            "model": str(args.model),
+            "model": model_key,
             "error_sum_sq": float(final_err),
             "n_train_rows": len(rows_train),
             "n_validation_rows": len(rows_validation),

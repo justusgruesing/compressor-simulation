@@ -2,7 +2,7 @@
 #
 # Validation script for Molinaroli compressor models.
 #
-# Supports: original | modified | oil_path
+# Supports: original | modified | oil_path (v7 with 3-stage discharge chain)
 #
 # Supports two input modes:
 #   A) New mode (like GA fitting script):
@@ -19,7 +19,7 @@
 #   python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_oil_path_ga_2026-03-26.csv --model oil_path --oil LPG68 --selection_mode all
 #
 # Example (new mode, cross-validation: params from LPG68, validate on LPG100):
-#   python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_modified_ga_2026-03-18_143802.csv --model modified --oil LPG68 --selection_mode all
+#    python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_oil_path_ga_2026-04-06_042321.csv --model oil_path --oil LPG68 --selection_mode all
 
 from __future__ import annotations
 
@@ -649,15 +649,15 @@ def _extract_loss_terms(rec: dict, comp, model: str) -> None:
         rec["mu_oil_mPas"] = _finite(getattr(comp, "mu_oil", np.nan))
         rec["mu_mix_eff_Pas"] = _finite(getattr(comp, "mu_mix_eff", np.nan))
 
-    # Oil path specific terms
+    # Oil path specific terms (v7 with 3-stage discharge chain)
     if k == "oil_path":
+        # --- Suction-side oil path ---
         rec["W_dot_oil_recirc_W"] = _finite(getattr(comp, "W_dot_oil_recirc", np.nan))
         rec["m_dot_oil_kg_s"] = _finite(getattr(comp, "m_dot_oil", np.nan))
         rec["m_dot_fl_kg_s"] = _finite(getattr(comp, "m_dot_fl", np.nan))
         rec["m_dot_gas_discharge_kg_s"] = _finite(getattr(comp, "m_dot_gas_discharge", np.nan))
 
         rec["Q_suc_oil_W"] = _finite(getattr(comp, "Q_dot_suc_oil", np.nan))
-        rec["Q_dis_total_W"] = _finite(getattr(comp, "Q_dis_total", np.nan))
 
         rec["m_dot_KM_degas_thr_kg_s"] = _finite(getattr(comp, "m_dot_KM_degas_thr", np.nan))
         rec["m_dot_KM_degas_ht_kg_s"] = _finite(getattr(comp, "m_dot_KM_degas_ht", np.nan))
@@ -668,18 +668,35 @@ def _extract_loss_terms(rec: dict, comp, model: str) -> None:
         rec["w_KM_after"] = _finite(getattr(comp, "w_KM_after", np.nan))
         rec["w_KM_after_raw"] = _finite(getattr(comp, "w_KM_after_raw", np.nan))
 
+        T_throttle = _finite(getattr(comp, "T_throttle", np.nan))
+        rec["T_throttle_C"] = k_to_c(T_throttle) if np.isfinite(T_throttle) else float("nan")
+
         T_oil_after = _finite(getattr(comp, "T_oil_after", np.nan))
         rec["T_oil_after_C"] = k_to_c(T_oil_after) if np.isfinite(T_oil_after) else float("nan")
 
+        # --- Discharge-side 3-stage chain (v7) ---
+        rec["Q_dis_total_W"] = _finite(getattr(comp, "Q_dis_total", np.nan))
+        rec["Q_dissolve_3_W"] = _finite(getattr(comp, "Q_dissolve_3", np.nan))
+        rec["Q_oil_sump_W"] = _finite(getattr(comp, "Q_oil_sump", np.nan))
+
+        rec["w_KM_mix"] = _finite(getattr(comp, "w_KM_mix", np.nan))
+        rec["w_KM_dis"] = _finite(getattr(comp, "w_KM_dis", np.nan))
+
+        # Gas exiting compressor (should ≈ m_suc for mass balance check)
+        rec["m_dot_gas_exit_kg_s"] = _finite(getattr(comp, "m_dot_KM_gas", np.nan))
+
+        # --- Predictor-corrector diagnostics ---
         T_dis_est = _finite(getattr(comp, "T_dis_est", np.nan))
         T_dis_corr = _finite(getattr(comp, "T_dis_corr", np.nan))
         rec["T_dis_est_C"] = k_to_c(T_dis_est) if np.isfinite(T_dis_est) else float("nan")
         rec["T_dis_corr_C"] = k_to_c(T_dis_corr) if np.isfinite(T_dis_corr) else float("nan")
+        rec["pc_convergence_gap_K"] = _finite(getattr(comp, "pc_convergence_gap", np.nan))
 
-        m_KM_gas = _finite(getattr(comp, "m_dot_KM_gas", np.nan))
-        T_KM_gas = _finite(getattr(comp, "T_KM_gas", np.nan))
-        rec["m_dot_KM_gas_diag_kg_s"] = m_KM_gas
-        rec["T_KM_gas_diag_C"] = k_to_c(T_KM_gas) if np.isfinite(T_KM_gas) else float("nan")
+        # --- Fallback counters (per operating point, reset by _clear_cache) ---
+        rec["stage1_fallback_count"] = int(getattr(comp, "_stage1_fallback_count", 0))
+        rec["throttle_fallback_count"] = int(getattr(comp, "_throttle_fallback_count", 0))
+        rec["w_KM_after_fallback_count"] = int(getattr(comp, "_w_KM_after_fallback_count", 0))
+        rec["corrector_fallback_count"] = int(getattr(comp, "_corrector_fallback_count", 0))
 
 
 def _fill_nan_loss_terms(rec: dict, model: str) -> None:
@@ -697,17 +714,28 @@ def _fill_nan_loss_terms(rec: dict, model: str) -> None:
 
     if k == "oil_path":
         oil_nan_cols = [
+            # Suction side
             "W_dot_oil_recirc_W",
             "m_dot_oil_kg_s", "m_dot_fl_kg_s", "m_dot_gas_discharge_kg_s",
-            "Q_suc_oil_W", "Q_dis_total_W",
+            "Q_suc_oil_W",
             "m_dot_KM_degas_thr_kg_s", "m_dot_KM_degas_ht_kg_s",
             "m_dot_KM_degas_total_kg_s", "m_dot_KM_degas_ht_raw_kg_s",
             "w_KM_sump", "w_KM_after", "w_KM_after_raw",
-            "T_oil_after_C", "T_dis_est_C", "T_dis_corr_C",
-            "m_dot_KM_gas_diag_kg_s", "T_KM_gas_diag_C",
+            "T_throttle_C", "T_oil_after_C",
+            # Discharge side (3-stage chain)
+            "Q_dis_total_W", "Q_dissolve_3_W", "Q_oil_sump_W",
+            "w_KM_mix", "w_KM_dis",
+            "m_dot_gas_exit_kg_s",
+            # Predictor-corrector
+            "T_dis_est_C", "T_dis_corr_C", "pc_convergence_gap_K",
         ]
         for col in oil_nan_cols:
             rec[col] = float("nan")
+
+        # Fallback counters default to 0 (not NaN — they are integer counts)
+        for col in ["stage1_fallback_count", "throttle_fallback_count",
+                     "w_KM_after_fallback_count", "corrector_fallback_count"]:
+            rec[col] = 0
 
 
 # =========================================================

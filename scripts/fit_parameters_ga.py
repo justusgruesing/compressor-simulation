@@ -849,17 +849,17 @@ def build_bounds(model: str, V_h_m3: float, vic_lo_scale: float, vic_hi_scale: f
         }
     elif k == "oil_path":
         by_name = {
-            "Ua_suc_ref": (8.0, 55.0),
+            "Ua_suc_ref": (15.0, 55.0),
             "Ua_dis_ref": (2.0, 20.0),
             "Ua_amb": (0.1, 3.0),
-            "A_tot": (2e-9, 5e-7),
-            "A_dis": (4e-6, 5e-4),
-            "V_IC": (vic_lo, vic_hi),
-            "alpha_loss": (0.10, 0.30),
-            "W_dot_loss_ref": (30.0, 80.0),
-            "alpha_fric_tot": (500.0, 900.0),
-            "m_dot_oil_ref": (1e-4, 1e-2),
-            "Ua_suc_oil_ref": (0.5, 30.0),
+            "A_tot": (5e-9, 1e-6),
+            "A_dis": (6e-6, 1e-3),
+            "V_IC": (25.0e-6, vic_hi),
+            "alpha_loss": (0.15, 0.30),
+            "W_dot_loss_ref": (40.0, 80.0),
+            "alpha_fric_tot": (600.0, 1200.0),
+            "m_dot_oil_ref": (5e-5, 1e-3),
+            "Ua_suc_oil_ref": (2, 30.0),
         }
     else:
         raise ValueError("Unknown model. Use: original | modified | oil_path")

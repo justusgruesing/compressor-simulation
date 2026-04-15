@@ -29,15 +29,6 @@
 #   # Only phase 3a (fast check):
 #   python scripts/batch_run_analysis_plots.py --phase 3a
 #
-#   # Phase A:
-#   python scripts/batch_run_analysis_plots.py --phase 3a
-#
-#   # Phase B:
-#   python scripts/batch_run_analysis_plots.py --phase 3b
-#
-#   # Phase C:
-#   python scripts/batch_run_analysis_plots.py --phase 3c --n_workers 4
-#
 #   # Parallelized:
 #   python scripts/batch_run_analysis_plots.py --n_workers 4
 #
@@ -96,10 +87,14 @@ IRREVERSIBILITY_SCRIPT = Path("scripts/plotting_scripts/irreversibility_curves.p
 # =========================================================
 # Plot configuration per phase
 # =========================================================
-# Phase 3a: irreversibility (3 jobs) + loss_curves (15 jobs) = 18 jobs
-#   Both now use oil-pair input (LPG68 vs LPG100) similar to efficiency_curves.
+# Phase 3a: irreversibility (3 jobs) + loss_curves (12 jobs) = 15 jobs
+#   irreversibility uses oil-pair input (LPG68 vs LPG100) like efficiency_curves.
+#   loss_curves runs per single-oil; "all" is skipped because the script's
+#   internal oil mapping (LPG68/LPG100) doesn't accept "all".
+#   Note: loss_curves.py does NOT support --vary pressure_ratio.
 IRREVERSIBILITY_VARY = ["T_evap"]
-LOSS_CURVES_VARY = ["T_evap", "T_cond", "speed", "superheat", "pressure_ratio"]
+LOSS_CURVES_VARY = ["T_evap", "T_cond", "speed", "superheat"]
+LOSS_CURVES_OILS = ["LPG68", "LPG100"]  # exclude "all" — see comment above
 
 # Phase 3b: efficiency curves (15 jobs)
 #   Only LPG68 vs. LPG100 (oil comparison using each oil's own fit)
@@ -166,7 +161,7 @@ def build_irreversibility_jobs() -> list[dict]:
 def build_loss_curves_jobs() -> list[dict]:
     jobs = []
     for model in MODELS:
-        for params_oil in SINGLE_OILS:
+        for params_oil in LOSS_CURVES_OILS:
             params_csv = PARAMS[model][params_oil]
             for vary in LOSS_CURVES_VARY:
                 out_dir = OUTPUT_BASE / "loss_curves" / model / f"vary_{vary}_params_{params_oil}"

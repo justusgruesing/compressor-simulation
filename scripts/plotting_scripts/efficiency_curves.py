@@ -61,20 +61,29 @@ from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified impo
 )
 
 # Optional: oil_path model
+# Note: the class in vclibpy is named Molinaroli_2017_Compressor_Oil_Path
+# (with underscore between Oil and Path). We try multiple naming variants
+# for robustness across vclibpy versions.
 try:
     from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
-        Molinaroli_2017_Compressor_OilPath,
+        Molinaroli_2017_Compressor_Oil_Path as Molinaroli_2017_Compressor_OilPath,
     )
     OIL_PATH_AVAILABLE = True
 except ImportError:
     try:
         from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
-            Molinaroli_OilPath_Compressor as Molinaroli_2017_Compressor_OilPath,
+            Molinaroli_2017_Compressor_OilPath,
         )
         OIL_PATH_AVAILABLE = True
     except ImportError:
-        OIL_PATH_AVAILABLE = False
-        Molinaroli_2017_Compressor_OilPath = None
+        try:
+            from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
+                Molinaroli_OilPath_Compressor as Molinaroli_2017_Compressor_OilPath,
+            )
+            OIL_PATH_AVAILABLE = True
+        except ImportError:
+            OIL_PATH_AVAILABLE = False
+            Molinaroli_2017_Compressor_OilPath = None
 
 plt.style.use("ebc.paper.mplstyle")
 
@@ -134,17 +143,17 @@ DEFAULT_PARAMS_OIL_PATH = {
 # =========================================================
 METRIC_CONFIG = {
     "eta_is": {
-        "label": "Isentroper Wirkungsgrad $\\eta_{is}$ [-]",
+        "label": "Isentroper Wirkungsgrad $\\eta_{is}$",
         "column": "eta_is",
         "title_short": "Isentroper Wirkungsgrad",
     },
     "lambda_h": {
-        "label": "Liefergrad $\\lambda_h$ [-]",
+        "label": "Liefergrad $\\lambda_h$",
         "column": "lambda_h",
         "title_short": "Liefergrad",
     },
     "zeta_gl": {
-        "label": "Globaler Gütegrad $\\zeta_{gl}$ [-]",
+        "label": "Globaler Gütegrad $\\zeta_{gl}$",
         "column": "zeta_gl",
         "title_short": "Globaler Gütegrad",
     },

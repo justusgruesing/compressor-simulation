@@ -17,7 +17,7 @@
 #
 # Examples:
 #   # Default grid (40x40), N=3600 rpm, SH=10 K, LPG68:
-#   python scripts/plotting_scripts/performance_map.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --oil LPG68
+#   python scripts/plotting_scripts/performance_map.py --params_csv results/final_results/Modified_LPG100/Fitting/fitted_params_lpg100_modified_ga_2026-03-28_092941.csv --oil LPG100 --metric all
 #
 #   # Custom grid and operating conditions:
 #   python scripts/plotting_scripts/performance_map.py \
@@ -46,6 +46,22 @@ from vclibpy.components.compressors import Molinaroli_2017_Compressor
 from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified import (
     Molinaroli_2017_Compressor_Modified,
 )
+
+# Optional: oil_path model
+try:
+    from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
+        Molinaroli_2017_Compressor_OilPath,
+    )
+    OIL_PATH_AVAILABLE = True
+except ImportError:
+    try:
+        from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
+            Molinaroli_OilPath_Compressor as Molinaroli_2017_Compressor_OilPath,
+        )
+        OIL_PATH_AVAILABLE = True
+    except ImportError:
+        OIL_PATH_AVAILABLE = False
+        Molinaroli_2017_Compressor_OilPath = None
 
 plt.style.use("ebc.paper.mplstyle")
 
@@ -82,6 +98,20 @@ DEFAULT_PARAMS_MODIFIED = {
     "Ua_suc_ref": 16.05, "Ua_dis_ref": 13.96, "Ua_amb": 0.36,
     "A_tot": 9.47e-9, "A_dis": 86.1e-6, "V_IC": 30.7e-6,
     "alpha_loss": 0.16, "W_dot_loss_ref": 10.0, "alpha_fric_tot": 120.0,
+    "m_dot_ref": None, "f_ref": F_REF,
+}
+
+PARAM_NAMES_OIL_PATH = [
+    "Ua_suc_ref", "Ua_dis_ref", "Ua_amb", "A_tot", "A_dis",
+    "V_IC", "alpha_loss", "W_dot_loss_ref", "alpha_fric_tot",
+    "m_dot_oil_ref", "Ua_suc_oil_ref",
+]
+
+DEFAULT_PARAMS_OIL_PATH = {
+    "Ua_suc_ref": 16.05, "Ua_dis_ref": 13.96, "Ua_amb": 0.36,
+    "A_tot": 9.47e-9, "A_dis": 86.1e-6, "V_IC": 30.7e-6,
+    "alpha_loss": 0.16, "W_dot_loss_ref": 10.0, "alpha_fric_tot": 120.0,
+    "m_dot_oil_ref": 0.005, "Ua_suc_oil_ref": 5.0,
     "m_dot_ref": None, "f_ref": F_REF,
 }
 
@@ -138,7 +168,9 @@ def get_param_names(model: str) -> list[str]:
         return list(PARAM_NAMES_ORIGINAL)
     if m in ("mod", "modified"):
         return list(PARAM_NAMES_MODIFIED)
-    raise ValueError("Unknown model.")
+    if m in ("oil_path", "oilpath"):
+        return list(PARAM_NAMES_OIL_PATH)
+    raise ValueError("Unknown model. Use original | modified | oil_path")
 
 
 def get_default_params(model: str) -> dict:
@@ -147,7 +179,9 @@ def get_default_params(model: str) -> dict:
         return dict(DEFAULT_PARAMS_ORIGINAL)
     if m in ("mod", "modified"):
         return dict(DEFAULT_PARAMS_MODIFIED)
-    raise ValueError("Unknown model.")
+    if m in ("oil_path", "oilpath"):
+        return dict(DEFAULT_PARAMS_OIL_PATH)
+    raise ValueError("Unknown model. Use original | modified | oil_path")
 
 
 def make_compressor(model, N_max_hz, V_h_m3, params, refrigerant_name, oil_name=None):
@@ -163,7 +197,18 @@ def make_compressor(model, N_max_hz, V_h_m3, params, refrigerant_name, oil_name=
             lub_name=map_oil_for_modified_model(oil_name),
             parameters=params,
         )
-    raise ValueError("Unknown model.")
+    if m in ("oil_path", "oilpath"):
+        if not OIL_PATH_AVAILABLE:
+            raise ImportError("oil_path model not available in this vclibpy installation.")
+        if oil_name is None:
+            raise ValueError("oil_path model requires oil_name.")
+        return Molinaroli_2017_Compressor_OilPath(
+            N_max=N_max_hz, V_h=V_h_m3,
+            fluid_name=map_refrigerant_for_modified_model(refrigerant_name),
+            lub_name=map_oil_for_modified_model(oil_name),
+            parameters=params,
+        )
+    raise ValueError("Unknown model. Use original | modified | oil_path")
 
 
 def compute_m_dot_ref(med, V_h_m3: float) -> float:
@@ -183,9 +228,9 @@ class Control:
 class SimpleInputs:
     control: Control
     T_amb: float
-    lsq_max_nfev: int = 20000
-    lsq_ftol: float = 1e-8
-    lsq_xtol: float = 1e-8
+    lsq_max_nfev: int = 50000
+    lsq_ftol: float = 1e-12
+    lsq_xtol: float = 1e-12
 
 
 # =========================================================
@@ -237,13 +282,15 @@ def compute_discharge_pressure(med, T_cond_C: float):
 # =========================================================
 def compute_efficiency_point(
     comp, med, p_suc_pa, T_suc_K, p_out_pa, n_rel, T_amb_K, V_h_m3,
+    lsq_ftol=1e-12, lsq_xtol=1e-12, lsq_max_nfev=50000,
 ):
     """
-    Returns (eta_is, lambda_h) or (nan, nan) on failure.
+    Returns (eta_is, lambda_h, zeta_gl) or (nan, nan, nan) on failure.
     """
     inputs = SimpleInputs(
         control=Control(n=max(1e-9, min(1.0, n_rel))),
         T_amb=float(T_amb_K),
+        lsq_ftol=lsq_ftol, lsq_xtol=lsq_xtol, lsq_max_nfev=lsq_max_nfev,
     )
     fs_state = FlowsheetState()
 
@@ -259,42 +306,49 @@ def compute_efficiency_point(
             h_dis_actual = float(comp.state_outlet.h)
 
             if h_dis_actual <= h_suc:
-                return float("nan"), float("nan")
+                return float("nan"), float("nan"), float("nan")
 
             state_dis_isen = med.calc_state("PS", float(p_out_pa), s_suc)
             h_dis_isen = float(state_dis_isen.h)
 
             if h_dis_isen <= h_suc:
-                return float("nan"), float("nan")
+                return float("nan"), float("nan"), float("nan")
 
             w_is = h_dis_isen - h_suc
             w_actual = h_dis_actual - h_suc
 
             if w_actual <= 0:
-                return float("nan"), float("nan")
+                return float("nan"), float("nan"), float("nan")
 
             eta_is = w_is / w_actual
 
             m_flow = float(comp.m_flow)
+            P_el = float(comp.P_el)
             rho_suc = float(comp.state_inlet.d)
             f_hz = comp.get_n_absolute(inputs.control.n)
             m_dot_theoretical = rho_suc * V_h_m3 * f_hz
 
-            if m_dot_theoretical <= 0:
-                return float("nan"), float("nan")
+            if m_dot_theoretical <= 0 or P_el <= 0:
+                return float("nan"), float("nan"), float("nan")
 
             lambda_h = m_flow / m_dot_theoretical
+
+            # Global goodness: reversible power / electrical power
+            P_rev = m_flow * w_is
+            zeta_gl = P_rev / P_el
 
         # Sanity check ranges
         if not (0 < eta_is < 1.5):
             eta_is = float("nan")
         if not (0 < lambda_h < 1.5):
             lambda_h = float("nan")
+        if not (0 < zeta_gl < 1.5):
+            zeta_gl = float("nan")
 
-        return eta_is, lambda_h
+        return eta_is, lambda_h, zeta_gl
 
     except Exception:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
 
 
 def compute_grid(
@@ -302,10 +356,11 @@ def compute_grid(
     params, N_max_hz, V_h_m3,
     T_evap_grid, T_cond_grid,
     N_rpm, SH_K, T_amb_C,
+    lsq_ftol=1e-12, lsq_xtol=1e-12, lsq_max_nfev=50000,
 ):
     """
-    Compute eta_is and lambda_h over a 2D T_evap × T_cond grid.
-    Returns (eta_grid, lambda_grid) as 2D arrays of shape (n_T_cond, n_T_evap).
+    Compute eta_is, lambda_h and zeta_gl over a 2D T_evap × T_cond grid.
+    Returns (eta_grid, lambda_grid, zeta_grid) as 2D arrays of shape (n_T_cond, n_T_evap).
     """
     comp = make_compressor(
         model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
@@ -320,6 +375,7 @@ def compute_grid(
 
     eta_grid = np.full((n_cond, n_evap), np.nan)
     lambda_grid = np.full((n_cond, n_evap), np.nan)
+    zeta_grid = np.full((n_cond, n_evap), np.nan)
 
     f_hz = rpm_to_hz(N_rpm)
     n_rel = f_hz / N_max_hz
@@ -349,12 +405,14 @@ def compute_grid(
             if p_out <= p_suc:
                 continue
 
-            eta_is, lambda_h = compute_efficiency_point(
+            eta_is, lambda_h, zeta_gl = compute_efficiency_point(
                 comp, med, p_suc, T_suc_K, p_out, n_rel, T_amb_K, V_h_m3,
+                lsq_ftol=lsq_ftol, lsq_xtol=lsq_xtol, lsq_max_nfev=lsq_max_nfev,
             )
 
             eta_grid[j, i] = eta_is
             lambda_grid[j, i] = lambda_h
+            zeta_grid[j, i] = zeta_gl
 
             if np.isfinite(eta_is) and np.isfinite(lambda_h):
                 n_valid += 1
@@ -364,7 +422,7 @@ def compute_grid(
         print(f"\r  Computing grid: {progress:.0f}% ({n_valid} valid points)", end="", flush=True)
 
     print(f"\r  Computing grid: 100% — {n_valid}/{n_total} valid points          ")
-    return eta_grid, lambda_grid
+    return eta_grid, lambda_grid, zeta_grid
 
 
 # =========================================================
@@ -466,15 +524,21 @@ def plot_heatmap(
 # =========================================================
 def main():
     ap = argparse.ArgumentParser(
-        description="Performance map heatmaps: eta_is and lambda_h over T_evap × T_cond grid."
+        description="Performance map heatmaps: eta_is, lambda_h, zeta_gl over T_evap × T_cond grid."
     )
 
     ap.add_argument("--params_csv", required=True, type=Path, help="Fitted parameter CSV")
     ap.add_argument("--oil", required=True, help="Oil name (LPG68 | LPG100)")
 
     # Model / fluid
-    ap.add_argument("--model", default="auto", help="original | modified | auto")
+    ap.add_argument("--model", default="auto", help="original | modified | oil_path | auto")
     ap.add_argument("--refrigerant", default="auto", help="RefProp fluid or auto")
+
+    # Metric selection
+    ap.add_argument(
+        "--metric", nargs="+", default=["eta_is", "lambda_h"],
+        help="Which metric(s) to plot: eta_is | lambda_h | zeta_gl | all (default: eta_is lambda_h)",
+    )
 
     # Compressor geometry
     ap.add_argument("--N_max_rpm", type=float, default=7200.0)
@@ -493,9 +557,18 @@ def main():
     ap.add_argument("--n_grid", type=int, default=40,
                     help="Grid points per axis (default 40 → 40×40 = 1600 simulations)")
 
+    # Solver tolerances
+    ap.add_argument("--lsq_ftol", type=float, default=1e-12,
+                    help="Solver function tolerance (default 1e-12)")
+    ap.add_argument("--lsq_xtol", type=float, default=1e-12,
+                    help="Solver variable tolerance (default 1e-12)")
+    ap.add_argument("--lsq_max_nfev", type=int, default=50000,
+                    help="Solver max function evaluations (default 50000)")
+
     # Plot options
     ap.add_argument("--cmap_eta", default="viridis", help="Colormap for eta_is")
     ap.add_argument("--cmap_lambda", default="viridis", help="Colormap for lambda_h")
+    ap.add_argument("--cmap_zeta", default="viridis", help="Colormap for zeta_gl")
     ap.add_argument("--contour_levels", type=int, default=10)
 
     ap.add_argument("--out_dir", default="results/performance_map")
@@ -539,6 +612,25 @@ def main():
     print(f"  T_evap range:    {args.T_evap_min} → {args.T_evap_max} °C")
     print(f"  T_cond range:    {args.T_cond_min} → {args.T_cond_max} °C")
     print(f"  Grid:            {args.n_grid}×{args.n_grid} = {args.n_grid**2} points")
+    print(f"  Solver tol:      ftol={args.lsq_ftol:.0e}, xtol={args.lsq_xtol:.0e}, max_nfev={args.lsq_max_nfev}")
+
+    # -------------------------
+    # Metric selection
+    # -------------------------
+    all_metrics = ["eta_is", "lambda_h", "zeta_gl"]
+    requested = list(args.metric)
+    if "all" in requested:
+        metrics_to_plot = list(all_metrics)
+    else:
+        invalid = [m for m in requested if m not in all_metrics]
+        if invalid:
+            raise ValueError(
+                f"Unknown metric(s): {invalid}. Valid: {all_metrics + ['all']}"
+            )
+        seen = set()
+        metrics_to_plot = [m for m in requested if not (m in seen or seen.add(m))]
+
+    print(f"  Metric(s):       {', '.join(metrics_to_plot)}")
 
     # -------------------------
     # Build grid
@@ -546,19 +638,21 @@ def main():
     T_evap_grid = np.linspace(args.T_evap_min, args.T_evap_max, args.n_grid)
     T_cond_grid = np.linspace(args.T_cond_min, args.T_cond_max, args.n_grid)
 
-    # Oil name only needed for modified model
+    # Oil name needed for modified and oil_path models
     m = str(args.model).lower().strip()
-    oil_name = args.oil if m in ("mod", "modified") else None
+    oil_name = args.oil if m in ("mod", "modified", "oil_path", "oilpath") else None
 
     # -------------------------
     # Compute grids
     # -------------------------
-    eta_grid, lambda_grid = compute_grid(
+    eta_grid, lambda_grid, zeta_grid = compute_grid(
         med=med, model=args.model,
         refrigerant_name=args.refrigerant, oil_name=oil_name,
         params=params, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
         T_evap_grid=T_evap_grid, T_cond_grid=T_cond_grid,
         N_rpm=args.N_rpm, SH_K=args.SH_K, T_amb_C=args.T_amb_C,
+        lsq_ftol=args.lsq_ftol, lsq_xtol=args.lsq_xtol,
+        lsq_max_nfev=args.lsq_max_nfev,
     )
 
     # -------------------------
@@ -569,43 +663,54 @@ def main():
         f"N={args.N_rpm:.0f} rpm | SH={args.SH_K:.0f} K"
     )
 
-    # -------------------------
-    # Plot eta_is heatmap
-    # -------------------------
     stamp = _ts()
     oil_tag = args.oil.lower()
 
-    eta_path = out_dir / f"perfmap_eta_is_{oil_tag}_N{int(args.N_rpm)}_SH{int(args.SH_K)}_{stamp}.{args.out_format}"
-    plot_heatmap(
-        grid=eta_grid,
-        T_evap_grid=T_evap_grid,
-        T_cond_grid=T_cond_grid,
-        metric_label="eta_is",
-        cbar_label="Isentroper Wirkungsgrad $\\eta_{is}$",
-        title=f"Isentroper Wirkungsgrad\n{subtitle}",
-        out_path=eta_path,
-        cmap=args.cmap_eta,
-        contour_levels=args.contour_levels,
-    )
+    # Metric → (grid, filename_tag, cbar_label, title_label, cmap)
+    metric_info = {
+        "eta_is": {
+            "grid": eta_grid,
+            "cbar_label": "Isentroper Wirkungsgrad $\\eta_{is}$",
+            "title_label": "Isentroper Wirkungsgrad",
+            "cmap": args.cmap_eta,
+        },
+        "lambda_h": {
+            "grid": lambda_grid,
+            "cbar_label": "Liefergrad $\\lambda_h$",
+            "title_label": "Liefergrad",
+            "cmap": args.cmap_lambda,
+        },
+        "zeta_gl": {
+            "grid": zeta_grid,
+            "cbar_label": "Globaler Gütegrad $\\zeta_{gl}$",
+            "title_label": "Globaler Gütegrad",
+            "cmap": args.cmap_zeta,
+        },
+    }
 
     # -------------------------
-    # Plot lambda_h heatmap
+    # Plot each requested metric
     # -------------------------
-    lambda_path = out_dir / f"perfmap_lambda_h_{oil_tag}_N{int(args.N_rpm)}_SH{int(args.SH_K)}_{stamp}.{args.out_format}"
-    plot_heatmap(
-        grid=lambda_grid,
-        T_evap_grid=T_evap_grid,
-        T_cond_grid=T_cond_grid,
-        metric_label="lambda_h",
-        cbar_label="Liefergrad $\\lambda_h$",
-        title=f"Liefergrad\n{subtitle}",
-        out_path=lambda_path,
-        cmap=args.cmap_lambda,
-        contour_levels=args.contour_levels,
-    )
+    for metric_name in metrics_to_plot:
+        info = metric_info[metric_name]
+        out_path = (
+            out_dir
+            / f"perfmap_{metric_name}_{oil_tag}_N{int(args.N_rpm)}_SH{int(args.SH_K)}_{stamp}.{args.out_format}"
+        )
+        plot_heatmap(
+            grid=info["grid"],
+            T_evap_grid=T_evap_grid,
+            T_cond_grid=T_cond_grid,
+            metric_label=metric_name,
+            cbar_label=info["cbar_label"],
+            title=f"{info['title_label']}\n{subtitle}",
+            out_path=out_path,
+            cmap=info["cmap"],
+            contour_levels=args.contour_levels,
+        )
 
     # -------------------------
-    # Save data as CSV
+    # Save data as CSV (always includes all three metrics)
     # -------------------------
     records = []
     for j, T_cond_C in enumerate(T_cond_grid):
@@ -615,6 +720,7 @@ def main():
                 "T_cond_C": T_cond_C,
                 "eta_is": eta_grid[j, i],
                 "lambda_h": lambda_grid[j, i],
+                "zeta_gl": zeta_grid[j, i],
                 "N_rpm": args.N_rpm,
                 "SH_K": args.SH_K,
                 "oil": args.oil,

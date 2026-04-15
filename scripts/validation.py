@@ -19,7 +19,7 @@
 #   python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_oil_path_ga_2026-03-26.csv --model oil_path --oil LPG68 --selection_mode all
 #
 # Example (new mode, cross-validation: params from LPG68, validate on LPG100):
-#    python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_oil_path_ga_2026-04-06_042321.csv --model oil_path --oil LPG68 --selection_mode all
+#    python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/final_results/Modified_LPG100/Fitting/fitted_params_lpg100_modified_ga_2026-03-28_092941.csv --model modified --oil LPG68 --selection_mode train_only
 
 from __future__ import annotations
 
@@ -1094,7 +1094,8 @@ def main():
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     params_oil_tag = norm_oil(str(params_meta.get("oil", "unknown")))
     val_oil_tag = norm_oil(args.oil)
-    suffix = f"params_{params_oil_tag}_val_{val_oil_tag}_{model_key}_{ts}"
+    mode_tag = str(args.selection_mode).strip().lower().replace(" ", "_")
+    suffix = f"params_{params_oil_tag}_val_{val_oil_tag}_{model_key}_{mode_tag}_{ts}"
 
     out_detail = out_dir / f"validation_detail_{suffix}.csv"
     out_summary = out_dir / f"validation_summary_{suffix}.csv"

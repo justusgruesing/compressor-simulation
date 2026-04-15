@@ -21,9 +21,7 @@
 #       --metric mae
 #
 #   # RMSE scatter, only modified model:
-#   python scripts/plotting_scripts/train_vs_validation_scatter.py \
-#       --summary_dir results/validation_summaries_train_val \
-#       --metric rmse --model modified
+#   python scripts/plotting_scripts/train_vs_validation_scatter.py --summary_dir data/train_vs_validation --metric mae
 #
 #   # Exclude validation_oil=all configurations:
 #   python scripts/plotting_scripts/train_vs_validation_scatter.py \

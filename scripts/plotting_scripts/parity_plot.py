@@ -2,13 +2,16 @@
 #
 # Examples:
 #   # Validation CSV, color by superheat:
-#   python scripts/plotting_scripts/parity_plot.py --pred_csv results\validation\validation_detail_params_lpg68_val_lpg68_original_2026-03-19_142319.csv --color_by superheat
+#   python scripts/plotting_scripts/parity_plot.py --pred_csv results/validation/modified/detail/validation_detail_params_lpg68_val_lpg68_modified_validation_only_2026-04-14_151604.csv --color_by pressure_ratio
 #
-#   # Validation CSV, color by pressure ratio:
-#   python scripts/plotting_scripts/parity_plot.py --pred_csv results/validation/validation_detail_params_lpg68_val_lpg100_original_2026-03-19_130107.csv --color_by pressure_ratio
+#   # Color by condensation temperature (computed from p_out via RefProp):
+#   python scripts/plotting_scripts/parity_plot.py --pred_csv ... --color_by T_cond
 #
-#   # GA predictions CSV, no color:
-#   python scripts/plotting_scripts/parity_plot.py --pred_csv results/validation/validation_detail_params_lpg68_val_lpg68_modified_2026-03-19_130709.csv --color_by none
+#   # Color by speed:
+#   python scripts/plotting_scripts/parity_plot.py --pred_csv ... --color_by speed
+#
+#   # No color:
+#   python scripts/plotting_scripts/parity_plot.py --pred_csv ... --color_by none
 #
 import argparse
 from pathlib import Path
@@ -39,7 +42,7 @@ def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
-def _detect_split_role(df: pd.DataFrame) -> np.ndarray | None:
+def _detect_split_role(df: pd.DataFrame):
     """
     Detect train/validation role per row.
     Returns array of strings ('train', 'validation', '') or None if no info available.
@@ -54,6 +57,20 @@ def _detect_split_role(df: pd.DataFrame) -> np.ndarray | None:
     return None
 
 
+def _model_display_name(model_str: str) -> str:
+    """Map model strings to nice display names."""
+    s = str(model_str).strip().lower()
+    mapping = {
+        "original": "Original",
+        "orig": "Original",
+        "modified": "Modified",
+        "mod": "Modified",
+        "oil_path": "Oil Path",
+        "oilpath": "Oil Path",
+    }
+    return mapping.get(s, str(model_str).capitalize())
+
+
 def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
     """Generate a title from metadata columns if available."""
     parts = [f"Parity Plot: {metric_label}"]
@@ -62,7 +79,7 @@ def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
     if "model" in df.columns:
         vals = df["model"].dropna().unique()
         if len(vals) == 1:
-            model = str(vals[0]).capitalize()
+            model = _model_display_name(vals[0])
 
     params_oil = None
     if "params_oil" in df.columns:
@@ -82,11 +99,11 @@ def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
     if model:
         subtitle_parts.append(model)
     if params_oil and val_oil:
-        subtitle_parts.append(f"Params: {params_oil} → Data: {val_oil}")
+        subtitle_parts.append(f"Params: {params_oil} \u2192 Data: {val_oil}")
     elif params_oil:
         subtitle_parts.append(f"Params: {params_oil}")
     elif val_oil:
-        subtitle_parts.append(f"Öl: {val_oil}")
+        subtitle_parts.append(f"\u00d6l: {val_oil}")
 
     if subtitle_parts:
         parts.append(" | ".join(subtitle_parts))
@@ -95,25 +112,102 @@ def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
 
 
 # =========================================================
+# T_cond computation from p_out via RefProp (lazy import)
+# =========================================================
+_REFPROP_INSTANCES = {}  # cache one instance per fluid
+
+
+def _get_refprop(fluid_name: str):
+    """Lazy-import and cache RefProp instance per refrigerant."""
+    if fluid_name in _REFPROP_INSTANCES:
+        return _REFPROP_INSTANCES[fluid_name]
+    try:
+        from vclibpy.media import RefProp
+        med = RefProp(fluid_name=fluid_name)
+        _REFPROP_INSTANCES[fluid_name] = med
+        return med
+    except Exception as e:
+        print(f"  [WARN] Could not load RefProp for '{fluid_name}': {e}")
+        _REFPROP_INSTANCES[fluid_name] = None
+        return None
+
+
+def _compute_T_cond_from_p_out(df: pd.DataFrame) -> np.ndarray:
+    """
+    Compute saturation temperature at outlet pressure (= condensation temp.)
+    from the 'p_out_bar' column using RefProp.
+    Returns array of T_cond in °C, NaN where computation fails.
+    """
+    if "p_out_bar" not in df.columns:
+        return np.full(len(df), np.nan)
+
+    refrigerant = "PROPANE"
+    if "refrigerant" in df.columns:
+        vals = df["refrigerant"].dropna().unique()
+        if len(vals) == 1:
+            refrigerant = str(vals[0])
+
+    med = _get_refprop(refrigerant)
+    if med is None:
+        return np.full(len(df), np.nan)
+
+    p_out_bar = df["p_out_bar"].to_numpy(dtype=float)
+    T_cond_C = np.full(len(p_out_bar), np.nan)
+
+    print(f"  Computing T_cond from p_out using RefProp ({refrigerant}) ...")
+    for i, p_bar in enumerate(p_out_bar):
+        if not np.isfinite(p_bar) or p_bar <= 0:
+            continue
+        try:
+            state_sat = med.calc_state("PQ", float(p_bar) * 1e5, 0.0)
+            T_cond_C[i] = float(state_sat.T) - 273.15
+        except Exception:
+            pass
+
+    return T_cond_C
+
+
+# =========================================================
 # Color column mapping
 # =========================================================
 COLOR_CONFIG = {
     "superheat": {
         "col": "superheat_C",
-        "label": "Überhitzung in K",
+        "label": "\u00dcberhitzung in K",
         "cmap_default": "viridis",
+        "computed": False,
     },
     "pressure_ratio": {
         "col": "pressure_ratio",
-        "label": "Druckverhältnis",
+        "label": "Druckverh\u00e4ltnis",
         "cmap_default": "viridis",
+        "computed": False,
+    },
+    "T_evap": {
+        "col": "T_sat_suc_C",
+        "label": "Verdampfungstemperatur in \u00b0C",
+        "cmap_default": "viridis",
+        "computed": False,
+    },
+    "T_cond": {
+        "col": "_T_cond_computed",
+        "label": "Kondensationstemperatur in \u00b0C",
+        "cmap_default": "viridis",
+        "computed": True,
+    },
+    "speed": {
+        "col": "N_rpm",
+        "label": "Drehzahl in rpm",
+        "cmap_default": "viridis",
+        "computed": False,
     },
 }
 
 
-def _resolve_color(df: pd.DataFrame, color_by: str, cmap_override: str | None) -> tuple:
+def _resolve_color(df: pd.DataFrame, color_by: str, cmap_override):
     """
     Returns (color_values_array_or_None, color_label, cmap).
+    Computes T_cond on the fly if requested.
     """
     if color_by == "none" or color_by is None:
         return None, "", "viridis"
@@ -122,6 +216,15 @@ def _resolve_color(df: pd.DataFrame, color_by: str, cmap_override: str | None) -
     if cfg is None:
         print(f"[WARN] Unknown --color_by '{color_by}', falling back to none.")
         return None, "", "viridis"
+
+    if cfg["computed"] and color_by == "T_cond":
+        # Compute T_cond from p_out_bar using RefProp
+        T_cond = _compute_T_cond_from_p_out(df)
+        if not np.any(np.isfinite(T_cond)):
+            print(f"[WARN] Could not compute T_cond from p_out_bar, falling back to no color.")
+            return None, "", "viridis"
+        cmap = cmap_override if cmap_override else cfg["cmap_default"]
+        return T_cond, cfg["label"], cmap
 
     col = cfg["col"]
     if col not in df.columns:
@@ -142,10 +245,8 @@ def _scatter_split(
 ):
     """
     Scatter with train (hollow) / validation (filled) distinction.
-    Returns n_out for the legend text.
     """
     s = point_size
-    n_out = int(np.sum(outside))
 
     has_split = roles is not None
     has_color = (color_values is not None and
@@ -155,7 +256,7 @@ def _scatter_split(
 
     if has_split:
         is_train = (roles == "train")
-        is_val = ~is_train  # validation + unknown → treated as validation
+        is_val = ~is_train  # validation + unknown -> treated as validation
     else:
         is_train = np.zeros(len(x), dtype=bool)
         is_val = np.ones(len(x), dtype=bool)
@@ -181,7 +282,7 @@ def _scatter_split(
                 x[mask_val_out], y[mask_val_out],
                 c=c[mask_val_out], cmap=cmap, vmin=vmin, vmax=vmax,
                 s=s, alpha=0.95, marker="s", edgecolors="none",
-                label=f"Validation außerhalb {band_label} (n={int(mask_val_out.sum())})",
+                label=f"Validation au\u00dferhalb {band_label} (n={int(mask_val_out.sum())})",
             )
             if sc_ref is None:
                 sc_ref = sc
@@ -190,7 +291,6 @@ def _scatter_split(
         mask_tr_in = is_train & ~outside
         mask_tr_out = is_train & outside
 
-        # For hollow markers with color: use edgecolors mapped to color values
         cmap_obj = plt.get_cmap(cmap)
         norm = plt.Normalize(vmin=vmin, vmax=vmax)
 
@@ -208,7 +308,7 @@ def _scatter_split(
                 x[mask_tr_out], y[mask_tr_out],
                 s=s, alpha=0.90, marker="s",
                 facecolors="none", edgecolors=edge_colors, linewidths=1.2,
-                label=f"Training außerhalb {band_label} (n={int(mask_tr_out.sum())})",
+                label=f"Training au\u00dferhalb {band_label} (n={int(mask_tr_out.sum())})",
             )
 
         # Colorbar
@@ -217,7 +317,7 @@ def _scatter_split(
             cbar.set_label(color_label)
 
     else:
-        # No color variable → use default colors
+        # No color variable -> use default colors
 
         # --- Validation (filled) ---
         mask_val_in = is_val & ~outside
@@ -233,7 +333,7 @@ def _scatter_split(
             ax.scatter(
                 x[mask_val_out], y[mask_val_out],
                 s=s, alpha=0.95, marker="s", linewidths=0.9,
-                label=f"Validation außerhalb {band_label} (n={int(mask_val_out.sum())})",
+                label=f"Validation au\u00dferhalb {band_label} (n={int(mask_val_out.sum())})",
             )
 
         # --- Training (hollow) ---
@@ -252,10 +352,8 @@ def _scatter_split(
                 x[mask_tr_out], y[mask_tr_out],
                 s=s, alpha=0.85, marker="s",
                 facecolors="none", edgecolors="C1", linewidths=1.2,
-                label=f"Training außerhalb {band_label} (n={int(mask_tr_out.sum())})",
+                label=f"Training au\u00dferhalb {band_label} (n={int(mask_tr_out.sum())})",
             )
-
-    return n_out
 
 
 def parity_plot_rel_band(
@@ -267,15 +365,14 @@ def parity_plot_rel_band(
     y_label: str,
     out_path: Path,
     *,
-    roles: np.ndarray | None = None,
-    color_values: np.ndarray | None = None,
+    roles=None,
+    color_values=None,
     color_label: str = "",
     cmap: str = "viridis",
-    cmin: float | None = None,
-    cmax: float | None = None,
-    point_size: int | None = None,
+    cmin=None,
+    cmax=None,
+    point_size=None,
 ):
-    # Build valid mask
     arrays = [x_meas, y_calc]
     if color_values is not None:
         arrays.append(color_values)
@@ -299,7 +396,6 @@ def parity_plot_rel_band(
     err_min_pct = float(np.min(rel_err) * 100.0)
     err_max_pct = float(np.max(rel_err) * 100.0)
 
-    # Limits
     xy_min = float(min(np.min(x), np.min(y)))
     xy_max = float(max(np.max(x), np.max(y)))
     if xy_min == xy_max:
@@ -311,18 +407,16 @@ def parity_plot_rel_band(
 
     fig, ax = plt.subplots(figsize=(8, 8))
 
-    # Reference lines
     xx = np.linspace(lo, hi, 200)
     ax.plot(xx, xx, linewidth=1.4, label="_nolegend_")
     band_color = "0.5"
     ax.plot(xx, (1.0 + band) * xx, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
-    ax.plot(xx, (1.0 - band) * xx, linestyle="--", linewidth=1.2, color=band_color, label=f"±{int(band*100)}%")
+    ax.plot(xx, (1.0 - band) * xx, linestyle="--", linewidth=1.2, color=band_color, label=f"\u00b1{int(band*100)}%")
 
-    # Color range
     vmin = float(np.nanmin(c)) if (c is not None and cmin is None) else cmin
     vmax = float(np.nanmax(c)) if (c is not None and cmax is None) else cmax
 
-    band_label = f"±{int(band*100)}%"
+    band_label = f"\u00b1{int(band*100)}%"
     _scatter_split(
         ax, x, y, r, outside, band_label,
         color_values=c, cmap=cmap, vmin=vmin, vmax=vmax,
@@ -332,7 +426,7 @@ def parity_plot_rel_band(
     ax.set_title(title)
 
     info_txt = (
-        f"Außerhalb ±{int(band*100)}%: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
+        f"Au\u00dferhalb \u00b1{int(band*100)}%: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
         f"Fehlerspanne: {err_min_pct:.2f}% bis {err_max_pct:.2f}%"
     )
     ax.text(
@@ -366,13 +460,13 @@ def parity_plot_abs_band(
     y_label: str,
     out_path: Path,
     *,
-    roles: np.ndarray | None = None,
-    color_values: np.ndarray | None = None,
+    roles=None,
+    color_values=None,
     color_label: str = "",
     cmap: str = "viridis",
-    cmin: float | None = None,
-    cmax: float | None = None,
-    point_size: int | None = None,
+    cmin=None,
+    cmax=None,
+    point_size=None,
 ):
     arrays = [x_meas, y_calc]
     if color_values is not None:
@@ -394,7 +488,6 @@ def parity_plot_abs_band(
     n_out = int(np.sum(outside))
     frac_out = float(n_out / n_total) if n_total else np.nan
 
-    # Limits
     xy_min = float(min(np.min(x), np.min(y)))
     xy_max = float(max(np.max(x), np.max(y)))
     if xy_min == xy_max:
@@ -410,12 +503,12 @@ def parity_plot_abs_band(
     ax.plot(xx, xx, linewidth=1.4, label="_nolegend_")
     band_color = "0.5"
     ax.plot(xx, xx + band_abs, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
-    ax.plot(xx, xx - band_abs, linestyle="--", linewidth=1.2, color=band_color, label=f"±{band_abs:.0f} K")
+    ax.plot(xx, xx - band_abs, linestyle="--", linewidth=1.2, color=band_color, label=f"\u00b1{band_abs:.0f} K")
 
     vmin = float(np.nanmin(c)) if (c is not None and cmin is None) else cmin
     vmax = float(np.nanmax(c)) if (c is not None and cmax is None) else cmax
 
-    band_label = f"±{band_abs:.0f} K"
+    band_label = f"\u00b1{band_abs:.0f} K"
     _scatter_split(
         ax, x, y, r, outside, band_label,
         color_values=c, cmap=cmap, vmin=vmin, vmax=vmax,
@@ -425,7 +518,7 @@ def parity_plot_abs_band(
     ax.set_title(title)
 
     info_txt = (
-        f"Außerhalb ±{band_abs:.0f} K: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
+        f"Au\u00dferhalb \u00b1{band_abs:.0f} K: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
         f"Fehlerspanne: {float(np.min(diff)):.2f} K bis {float(np.max(diff)):.2f} K"
     )
     ax.text(
@@ -453,7 +546,7 @@ def parity_plot_abs_band(
 # =========================================================
 # Column detection
 # =========================================================
-def _pick_pair(df: pd.DataFrame, candidates: list[tuple[str, str]]):
+def _pick_pair(df: pd.DataFrame, candidates):
     """Return first (meas, calc) pair that exists, else None."""
     for a, b in candidates:
         if a in df.columns and b in df.columns:
@@ -465,18 +558,24 @@ def _pick_pair(df: pd.DataFrame, candidates: list[tuple[str, str]]):
 # Main
 # =========================================================
 def main():
-    ap = argparse.ArgumentParser(description="Create parity plots from predictions, validation, or run_batch CSV.")
-    ap.add_argument("--pred_csv", required=True, help="Path to CSV (predictions, validation, or run_batch output)")
+    ap = argparse.ArgumentParser(
+        description="Create parity plots from predictions, validation, or run_batch CSV."
+    )
+    ap.add_argument("--pred_csv", required=True,
+                    help="Path to CSV (predictions, validation, or run_batch output)")
     ap.add_argument("--out_dir", default="results/parity_plots", help="Output directory")
 
-    ap.add_argument("--band", type=float, default=0.05, help="Relative error band (default 0.05 = ±5%)")
-    ap.add_argument("--band_T_dis_abs", type=float, default=3.0, help="Absolute band for T_dis in K (default ±3)")
+    ap.add_argument("--band", type=float, default=0.05,
+                    help="Relative error band (default 0.05 = \u00b15%%)")
+    ap.add_argument("--band_T_dis_abs", type=float, default=3.0,
+                    help="Absolute band for T_dis in K (default \u00b13)")
 
     ap.add_argument(
         "--color_by",
-        choices=["superheat", "pressure_ratio", "none"],
+        choices=["superheat", "pressure_ratio", "T_evap", "T_cond", "speed", "none"],
         default="none",
-        help="Color points by: superheat (superheat_C), pressure_ratio, or none",
+        help="Color points by: superheat | pressure_ratio | T_evap | T_cond | speed | none. "
+             "T_cond is computed from p_out_bar via RefProp.",
     )
     ap.add_argument("--cmin", type=float, default=None, help="Fixed min for color scale")
     ap.add_argument("--cmax", type=float, default=None, help="Fixed max for color scale")
@@ -510,7 +609,7 @@ def main():
         n_val = int(np.sum(roles == "validation"))
         print(f"  Split info detected: {n_train} training, {n_val} validation points")
     else:
-        print("  No split info detected — all points treated equally.")
+        print("  No split info detected \u2014 all points treated equally.")
 
     # --- Resolve color ---
     color_vals, color_label, cmap = _resolve_color(df, args.color_by, args.cmap)
@@ -545,8 +644,8 @@ def main():
             y_calc=df[calc].to_numpy(dtype=float),
             band=args.band,
             title=title,
-            x_label="gemessener Massenstrom in g/s",
-            y_label="berechneter Massenstrom in g/s",
+            x_label="\u1e41 gemessen in g/s",
+            y_label="\u1e41 berechnet in g/s",
             out_path=out_dir / f"parity_m_dot_{stamp}.{args.out_format}",
             roles=roles,
             color_values=color_vals,
@@ -566,14 +665,14 @@ def main():
     # --- Elektrische Leistung ---
     if p_pair is not None:
         meas, calc = p_pair
-        title = _auto_title(df, "Elektrische Antriebsleistung")
+        title = _auto_title(df, "Elektrische Leistung")
         stats = parity_plot_rel_band(
             x_meas=df[meas].to_numpy(dtype=float),
             y_calc=df[calc].to_numpy(dtype=float),
             band=args.band,
             title=title,
-            x_label="gemessene Antriebsleistung in W",
-            y_label="berechnete Antriebsleistung in W",
+            x_label="Pel gemessen in W",
+            y_label="Pel berechnet in W",
             out_path=out_dir / f"parity_P_el_{stamp}.{args.out_format}",
             roles=roles,
             color_values=color_vals,
@@ -599,8 +698,8 @@ def main():
             y_calc=df[calc].to_numpy(dtype=float),
             band_abs=args.band_T_dis_abs,
             title=title,
-            x_label="gemessene Austrittstemperatur in °C",
-            y_label="berechnete Austrittstemperatur in °C",
+            x_label="Austrittstemperatur gemessen in \u00b0C",
+            y_label="Austrittstemperatur berechnet in \u00b0C",
             out_path=out_dir / f"parity_T_dis_{stamp}.{args.out_format}",
             roles=roles,
             color_values=color_vals,
@@ -626,7 +725,8 @@ def main():
 
     if not generated_any:
         print("\n[ERROR] Keine Plots erzeugt. Gefundene Spalten:")
-        print("        ", ", ".join(list(df.columns)[:25]), ("..." if len(df.columns) > 25 else ""))
+        print("        ", ", ".join(list(df.columns)[:25]),
+              ("..." if len(df.columns) > 25 else ""))
 
     print("Done. Output dir:", out_dir)
 

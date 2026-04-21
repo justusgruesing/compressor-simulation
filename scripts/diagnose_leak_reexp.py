@@ -25,14 +25,10 @@
 #
 # Examples:
 #   # Modified model with LPG68 fit, default sweep:
-#   python scripts/plotting_scripts/diagnose_leak_reexp.py \
-#       --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv \
-#       --oil LPG68
+#   python scripts/diagnose_leak_reexp.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --oil LPG68
 #
 #   # Original model for comparison:
-#   python scripts/plotting_scripts/diagnose_leak_reexp.py \
-#       --params_csv results/final_results/Molinaroli_LPG68/Fitting/fitted_params_lpg68_original_ga_2026-03-08_101308.csv \
-#       --oil LPG68
+#   python scripts/diagnose_leak_reexp.py --params_csv results/final_results/Molinaroli_LPG68/Fitting/fitted_params_lpg68_original_ga_2026-03-08_101308.csv --oil LPG68
 
 from __future__ import annotations
 

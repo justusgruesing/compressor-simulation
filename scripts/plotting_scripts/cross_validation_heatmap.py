@@ -16,10 +16,10 @@
 #
 # Examples:
 #   # MAE for modified model:
-#   python scripts/plotting_scripts/cross_validation_heatmap.py --summary_dir results/final_results/validation_summary/summary_Modified --metric mae
+#   python scripts/plotting_scripts/cross_validation_heatmap.py --summary_dir results/final_results/validation_summary/summary_Oil_Path --metric mae
 #
 #   # RMSE for original model:
-#   python scripts/plotting_scripts/cross_validation_heatmap.py --summary_dir results/final_results/validation_summary/summary_Modified --metric rmse
+#   python scripts/plotting_scripts/cross_validation_heatmap.py --summary_dir results/final_results/validation_summary/summary_Oil_Path --metric rmse
 
 from __future__ import annotations
 
@@ -134,6 +134,33 @@ def build_matrix(df: pd.DataFrame, value_col: str) -> np.ndarray:
     return matrix
 
 
+def add_combined_metrics(df: pd.DataFrame, Tdis_norm_K: float = 50.0) -> pd.DataFrame:
+    """
+    Add combined error metrics that aggregate over m_dot, P_el and T_dis.
+    T_dis is normalized by Tdis_norm_K (default 50 K, like James et al.) so it
+    becomes dimensionless and comparable to the relative errors.
+
+    Adds columns:
+      _combined_mae:  mean of (mae_m_rel, mae_P_rel, mae_T_dis/Tdis_norm)
+      _combined_rmse: mean of (rmse_m_rel, rmse_P_rel, rmse_T_dis/Tdis_norm)
+    """
+    if "Tdis_norm_K" in df.columns:
+        T_norm = pd.to_numeric(df["Tdis_norm_K"], errors="coerce").fillna(Tdis_norm_K)
+    else:
+        T_norm = pd.Series([Tdis_norm_K] * len(df), index=df.index)
+
+    df = df.copy()
+    df["_combined_mae"] = (
+        df["mae_e_m_rel"] + df["mae_e_P_rel"] + df["mae_e_T_dis_K"] / T_norm
+    ) / 3.0
+
+    df["_combined_rmse"] = (
+        df["rmse_e_m_rel"] + df["rmse_e_P_rel"] + df["rmse_e_T_dis_K"] / T_norm
+    ) / 3.0
+
+    return df
+
+
 # =========================================================
 # Metric configuration
 # =========================================================
@@ -194,7 +221,32 @@ def get_metric_config(metric: str) -> list[dict]:
             },
         ]
 
-    raise ValueError(f"Unknown metric: {metric}. Use 'mae' or 'rmse'.")
+    if m in ("mae_combined", "combined_mae"):
+        return [
+            {
+                "col": "_combined_mae",
+                "title": "Aggregierter MAE\n(Ø über $\\dot{m}$, $P_{el}$, $T_{dis}/T_{norm}$)",
+                "cbar_label": "Ø MAE [%]",
+                "scale": 100.0,
+                "fmt": "{:.2f}",
+            },
+        ]
+
+    if m in ("rmse_combined", "combined_rmse"):
+        return [
+            {
+                "col": "_combined_rmse",
+                "title": "Aggregierter RMSE\n(Ø über $\\dot{m}$, $P_{el}$, $T_{dis}/T_{norm}$)",
+                "cbar_label": "Ø RMSE [%]",
+                "scale": 100.0,
+                "fmt": "{:.2f}",
+            },
+        ]
+
+    raise ValueError(
+        f"Unknown metric: {metric}. "
+        f"Use 'mae', 'rmse', 'mae_combined' or 'rmse_combined'."
+    )
 
 
 # =========================================================
@@ -305,11 +357,17 @@ def plot_cross_validation_matrix(
     out_path: Path,
 ):
     """
-    Create a figure with three 3×3 heatmaps side by side.
+    Create a figure with one or three 3×3 heatmaps side by side, depending
+    on the metric type (combined → 1 plot, per-target → 3 plots).
     """
     metric_cfgs = get_metric_config(metric)
+    n_plots = len(metric_cfgs)
 
-    fig, axes = plt.subplots(1, 3, figsize=(19, 6.5))
+    if n_plots == 1:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+        axes = [ax]
+    else:
+        fig, axes = plt.subplots(1, n_plots, figsize=(19, 6.5))
 
     for idx, cfg in enumerate(metric_cfgs):
         matrix = build_matrix(df, cfg["col"])
@@ -325,7 +383,15 @@ def plot_cross_validation_matrix(
             fig=fig,
         )
 
-    metric_title = {"mae": "MAE", "rmse": "RMSE"}[metric.lower()]
+    metric_title_map = {
+        "mae": "MAE pro Zielgröße",
+        "rmse": "RMSE pro Zielgröße",
+        "mae_combined": "Aggregierter MAE",
+        "combined_mae": "Aggregierter MAE",
+        "rmse_combined": "Aggregierter RMSE",
+        "combined_rmse": "Aggregierter RMSE",
+    }
+    metric_title = metric_title_map.get(metric.lower(), metric.upper())
     fig.suptitle(
         f"Cross-Validation ({metric_title}) — {model_name.capitalize()} Modell",
         fontsize=15, y=1.02,
@@ -347,10 +413,15 @@ def main():
     )
     ap.add_argument("--summary_dir", required=True, type=Path,
                     help="Directory containing validation_summary_*.csv files")
-    ap.add_argument("--metric", required=True, choices=["mae", "rmse"],
-                    help="Which error metric to plot")
+    ap.add_argument("--metric", required=True,
+                    choices=["mae", "rmse", "mae_combined", "rmse_combined"],
+                    help="Which error metric to plot. "
+                         "'mae'/'rmse' = 3 heatmaps (one per target). "
+                         "'mae_combined'/'rmse_combined' = 1 heatmap aggregating all three targets.")
     ap.add_argument("--model", default=None,
-                    help="Filter by model (original | modified). If omitted, use all rows.")
+                    help="Filter by model (original | modified | oil_path). If omitted, use all rows.")
+    ap.add_argument("--Tdis_norm_K", type=float, default=50.0,
+                    help="Normalization for T_dis in combined metrics (default 50 K, like James et al.)")
     ap.add_argument("--out_dir", default="results/cross_validation_heatmap",
                     help="Output directory")
     ap.add_argument("--out_format", choices=["png", "svg"], default="png")
@@ -367,6 +438,11 @@ def main():
     # Load data
     # -------------------------
     df = load_summaries(args.summary_dir, model_filter=args.model)
+
+    # Compute combined metrics if needed
+    if args.metric.lower() in ("mae_combined", "rmse_combined", "combined_mae", "combined_rmse"):
+        df = add_combined_metrics(df, Tdis_norm_K=args.Tdis_norm_K)
+        print(f"  Tdis_norm_K (combined): {args.Tdis_norm_K} K")
 
     # Detect model name(s)
     unique_models = df["model"].dropna().unique()

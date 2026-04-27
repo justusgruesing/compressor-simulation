@@ -255,46 +255,46 @@ fig = plt.figure(figsize=(14, 10))
 gs = GridSpec(2, 2, hspace=0.35, wspace=0.3)
 
 ax1 = fig.add_subplot(gs[0, 0])
-ax1.plot(T_celsius_68, cp_68, 'o', color='#534AB7', markersize=6, label='Messdaten (Fuchs)')
+ax1.plot(T_celsius_68, cp_68, 'o', color='#534AB7', markersize=6, label='Herstellerdaten')
 ax1.plot(T_plot_C, a_cp_68 + b_cp_68 * T_plot, '-', color='#534AB7', linewidth=1.5,
          label=f'Fit: {a_cp_68:.4f} + {b_cp_68:.6f}·T')
-ax1.set_xlabel('Temperatur [°C]')
-ax1.set_ylabel('$c_p$ [kJ/(kg·K)]')
-ax1.set_title('Reniso LPG 68 — Spezifische Wärmekapazität')
+ax1.set_xlabel('Temperatur in °C')
+ax1.set_ylabel('$c_p$ in kJ/(kg·K)')
+ax1.set_title('PAG 68 — Spezifische Wärmekapazität')
 ax1.legend(fontsize=9)
 ax1.grid(True, alpha=0.3)
 
 ax2 = fig.add_subplot(gs[0, 1])
-ax2.plot(T_celsius_100, cp_100, 's', color='#0F6E56', markersize=6, label='Messdaten (Fuchs)')
+ax2.plot(T_celsius_100, cp_100, 's', color='#0F6E56', markersize=6, label='Herstellerdaten')
 ax2.plot(T_plot_C, a_cp_100 + b_cp_100 * T_plot, '-', color='#0F6E56', linewidth=1.5,
          label=f'Fit: {a_cp_100:.4f} + {b_cp_100:.6f}·T')
-ax2.set_xlabel('Temperatur [°C]')
-ax2.set_ylabel('$c_p$ [kJ/(kg·K)]')
-ax2.set_title('Reniso LPG 100 — Spezifische Wärmekapazität')
+ax2.set_xlabel('Temperatur in °C')
+ax2.set_ylabel('$c_p$ in kJ/(kg·K)')
+ax2.set_title('PAG 100 — Spezifische Wärmekapazität')
 ax2.legend(fontsize=9)
 ax2.grid(True, alpha=0.3)
 
 ax3 = fig.add_subplot(gs[1, 0])
-ax3.plot(T_celsius_68, lam_68, 'o', color='#D85A30', markersize=6, label='Messdaten (Fuchs)')
+ax3.plot(T_celsius_68, lam_68, 'o', color='#D85A30', markersize=6, label='Herstellerdaten')
 ax3.plot(T_plot_C, a_lam_68 + b_lam_68 * T_plot, '-', color='#D85A30', linewidth=1.5,
          label=f'Fit: {a_lam_68:.4f} + {b_lam_68:.8f}·T')
-ax3.set_xlabel('Temperatur [°C]')
-ax3.set_ylabel('$\\lambda$ [W/(m·K)]')
-ax3.set_title('Reniso LPG 68 — Wärmeleitfähigkeit')
+ax3.set_xlabel('Temperatur in °C')
+ax3.set_ylabel('$\\lambda$ in W/(m·K)')
+ax3.set_title('PAG 68 — Wärmeleitfähigkeit')
 ax3.legend(fontsize=9)
 ax3.grid(True, alpha=0.3)
 
 ax4 = fig.add_subplot(gs[1, 1])
-ax4.plot(T_celsius_100, lam_100, 's', color='#993556', markersize=6, label='Messdaten (Fuchs)')
+ax4.plot(T_celsius_100, lam_100, 's', color='#993556', markersize=6, label='Herstellerdaten')
 ax4.plot(T_plot_C, a_lam_100 + b_lam_100 * T_plot, '-', color='#993556', linewidth=1.5,
          label=f'Fit: {a_lam_100:.4f} + {b_lam_100:.8f}·T')
-ax4.set_xlabel('Temperatur [°C]')
-ax4.set_ylabel('$\\lambda$ [W/(m·K)]')
-ax4.set_title('Reniso LPG 100 — Wärmeleitfähigkeit')
+ax4.set_xlabel('Temperatur in °C')
+ax4.set_ylabel('$\\lambda$ in W/(m·K)')
+ax4.set_title('PAG 100 — Wärmeleitfähigkeit')
 ax4.legend(fontsize=9)
 ax4.grid(True, alpha=0.3)
 
-fig.suptitle('Lineare Fits der Öl-Stoffwerte für das LubricantFitting-Modul',
+fig.suptitle('Lineare Fits der Reinstoffwerte für PAG 68 und PAG 100',
              fontsize=13, fontweight='bold', y=0.98)
 
 plt.savefig(os.path.join(OUTPUT_DIR, 'oil_property_fits.png'), dpi=150, bbox_inches='tight')

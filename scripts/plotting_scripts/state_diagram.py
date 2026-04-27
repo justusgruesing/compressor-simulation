@@ -19,14 +19,17 @@
 #   $env:RPPREFIX = "T:\ahl\REFPROP"
 #
 # Examples:
+#   # Single operating point, original model:
+#   python scripts/plotting_scripts/state_diagram.py --params_csv results/final_results/Molinaroli_LPG68/Fitting/fitted_params_lpg68_original_ga_2026-03-08_101308.csv --oil LPG68 --T_evap 0 --T_cond 50 --N_rpm 3600 --SH_K 10
+#
 #   # Single operating point, modified model:
 #   python scripts/plotting_scripts/state_diagram.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --oil LPG68 --T_evap 0 --T_cond 50 --N_rpm 3600 --SH_K 10
 #
+#   # Single operating point, oil_path model:
+#   python scripts/plotting_scripts/state_diagram.py --params_csv results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv --oil LPG68 --T_evap 0 --T_cond 50 --N_rpm 3600 --SH_K 10
+#
 #   # Compare two models on the same diagram:
-#   python scripts/plotting_scripts/state_diagram.py \
-#       --params_csv results/.../fitted_params_lpg68_modified_ga_....csv \
-#       --params_csv2 results/.../fitted_params_lpg68_original_ga_....csv \
-#       --oil LPG68 --T_evap 0 --T_cond 50 --N_rpm 3600 --SH_K 10
+#   python scripts/plotting_scripts/state_diagram.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --params_csv2 results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv --oil LPG68 --T_evap 0 --T_cond 50 --N_rpm 3600 --SH_K 10
 
 from __future__ import annotations
 

@@ -203,6 +203,100 @@ COLOR_CONFIG = {
     },
 }
 
+# Categorical color modes (discrete groups, no colorbar)
+CATEGORICAL_MODES = {"train_validation", "oil"}
+
+CATEGORICAL_COLORS = {
+    "train_validation": {
+        "groups": {
+            "Training": "#EC635C",      # EBC red
+            "Validierung": "#4B81C4",   # EBC blue
+        },
+    },
+    "oil": {
+        "groups": {
+            "LPG 68": "#EC635C",        # EBC red
+            "LPG 100": "#4B81C4",       # EBC blue
+        },
+    },
+}
+
+
+def _resolve_categorical_groups(df: pd.DataFrame, color_by: str):
+    """
+    Returns (group_labels_array, group_config) for categorical coloring.
+    group_labels_array has one label per row matching CATEGORICAL_COLORS keys.
+    Returns (None, None) if not a categorical mode.
+    """
+    if color_by not in CATEGORICAL_MODES:
+        return None, None
+
+    if color_by == "train_validation":
+        if "is_train" in df.columns:
+            labels = np.where(
+                df["is_train"].fillna(False).astype(bool),
+                "Training", "Validierung",
+            )
+        elif "split_role" in df.columns:
+            labels = np.where(
+                df["split_role"].fillna("").astype(str).str.lower() == "train",
+                "Training", "Validierung",
+            )
+        else:
+            print("  [WARN] No is_train/split_role column found for train_validation coloring.")
+            return None, None
+        return labels, CATEGORICAL_COLORS["train_validation"]
+
+    if color_by == "oil":
+        oil_col = None
+        for c in ("oil_norm", "oil"):
+            if c in df.columns:
+                oil_col = c
+                break
+        if oil_col is None:
+            print("  [WARN] No oil/oil_norm column found for oil coloring.")
+            return None, None
+        raw = df[oil_col].fillna("").astype(str)
+        labels = raw.apply(lambda s: "LPG 68" if "68" in s else ("LPG 100" if "100" in s else s))
+        return labels.to_numpy(), CATEGORICAL_COLORS["oil"]
+
+    return None, None
+
+
+def _scatter_categorical(
+    ax, x, y, group_labels, group_config, outside, band_label,
+    point_size=None,
+):
+    """
+    Scatter plot with discrete categorical coloring (no colorbar).
+    Each group gets its own color and legend entry.
+    """
+    s = point_size
+    groups = group_config["groups"]
+
+    for group_name, color in groups.items():
+        mask_group = (group_labels == group_name)
+        mask_in = mask_group & ~outside
+        mask_out = mask_group & outside
+
+        n_group = int(mask_group.sum())
+        n_out = int(mask_out.sum())
+
+        if np.any(mask_in):
+            ax.scatter(
+                x[mask_in], y[mask_in],
+                s=s, alpha=0.85, marker="o",
+                color=color, edgecolors="none",
+                label=f"{group_name} (n={n_group})",
+            )
+        if np.any(mask_out):
+            ax.scatter(
+                x[mask_out], y[mask_out],
+                s=s, alpha=0.95, marker="s",
+                color=color, edgecolors="none",
+                label=f"{group_name} außerhalb {band_label} (n={n_out})",
+            )
+
 
 def _resolve_color(df: pd.DataFrame, color_by: str, cmap_override):
     """
@@ -372,6 +466,8 @@ def parity_plot_rel_band(
     cmin=None,
     cmax=None,
     point_size=None,
+    cat_labels=None,
+    cat_config=None,
 ):
     arrays = [x_meas, y_calc]
     if color_values is not None:
@@ -382,6 +478,7 @@ def parity_plot_rel_band(
     y = y_calc[m]
     c = color_values[m] if color_values is not None else None
     r = roles[m] if roles is not None else None
+    cl = cat_labels[m] if cat_labels is not None else None
 
     if len(x) == 0:
         return {"n_total": 0, "n_outside": 0, "frac_outside": np.nan}
@@ -413,15 +510,21 @@ def parity_plot_rel_band(
     ax.plot(xx, (1.0 + band) * xx, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
     ax.plot(xx, (1.0 - band) * xx, linestyle="--", linewidth=1.2, color=band_color, label=f"\u00b1{int(band*100)}%")
 
-    vmin = float(np.nanmin(c)) if (c is not None and cmin is None) else cmin
-    vmax = float(np.nanmax(c)) if (c is not None and cmax is None) else cmax
-
     band_label = f"\u00b1{int(band*100)}%"
-    _scatter_split(
-        ax, x, y, r, outside, band_label,
-        color_values=c, cmap=cmap, vmin=vmin, vmax=vmax,
-        point_size=point_size, fig=fig, color_label=color_label,
-    )
+
+    if cl is not None and cat_config is not None:
+        _scatter_categorical(
+            ax, x, y, cl, cat_config, outside, band_label,
+            point_size=point_size,
+        )
+    else:
+        vmin = float(np.nanmin(c)) if (c is not None and cmin is None) else cmin
+        vmax = float(np.nanmax(c)) if (c is not None and cmax is None) else cmax
+        _scatter_split(
+            ax, x, y, r, outside, band_label,
+            color_values=c, cmap=cmap, vmin=vmin, vmax=vmax,
+            point_size=point_size, fig=fig, color_label=color_label,
+        )
 
     ax.set_title(title)
 
@@ -467,6 +570,8 @@ def parity_plot_abs_band(
     cmin=None,
     cmax=None,
     point_size=None,
+    cat_labels=None,
+    cat_config=None,
 ):
     arrays = [x_meas, y_calc]
     if color_values is not None:
@@ -477,6 +582,7 @@ def parity_plot_abs_band(
     y = y_calc[m]
     c = color_values[m] if color_values is not None else None
     r = roles[m] if roles is not None else None
+    cl = cat_labels[m] if cat_labels is not None else None
 
     if len(x) == 0:
         return {"n_total": 0, "n_outside": 0, "frac_outside": np.nan}
@@ -505,15 +611,21 @@ def parity_plot_abs_band(
     ax.plot(xx, xx + band_abs, linestyle="--", linewidth=1.2, color=band_color, label="_nolegend_")
     ax.plot(xx, xx - band_abs, linestyle="--", linewidth=1.2, color=band_color, label=f"\u00b1{band_abs:.0f} K")
 
-    vmin = float(np.nanmin(c)) if (c is not None and cmin is None) else cmin
-    vmax = float(np.nanmax(c)) if (c is not None and cmax is None) else cmax
-
     band_label = f"\u00b1{band_abs:.0f} K"
-    _scatter_split(
-        ax, x, y, r, outside, band_label,
-        color_values=c, cmap=cmap, vmin=vmin, vmax=vmax,
-        point_size=point_size, fig=fig, color_label=color_label,
-    )
+
+    if cl is not None and cat_config is not None:
+        _scatter_categorical(
+            ax, x, y, cl, cat_config, outside, band_label,
+            point_size=point_size,
+        )
+    else:
+        vmin = float(np.nanmin(c)) if (c is not None and cmin is None) else cmin
+        vmax = float(np.nanmax(c)) if (c is not None and cmax is None) else cmax
+        _scatter_split(
+            ax, x, y, r, outside, band_label,
+            color_values=c, cmap=cmap, vmin=vmin, vmax=vmax,
+            point_size=point_size, fig=fig, color_label=color_label,
+        )
 
     ax.set_title(title)
 
@@ -572,10 +684,14 @@ def main():
 
     ap.add_argument(
         "--color_by",
-        choices=["superheat", "pressure_ratio", "T_evap", "T_cond", "speed", "none"],
+        choices=["superheat", "pressure_ratio", "T_evap", "T_cond", "speed",
+                 "train_validation", "oil", "none"],
         default="none",
-        help="Color points by: superheat | pressure_ratio | T_evap | T_cond | speed | none. "
-             "T_cond is computed from p_out_bar via RefProp.",
+        help="Color points by: superheat | pressure_ratio | T_evap | T_cond | speed | "
+             "train_validation | oil | none. "
+             "T_cond is computed from p_out_bar via RefProp. "
+             "train_validation colors training vs validation points (needs selection_mode=all CSV). "
+             "oil colors by oil type (needs val_oil=all CSV).",
     )
     ap.add_argument("--cmin", type=float, default=None, help="Fixed min for color scale")
     ap.add_argument("--cmax", type=float, default=None, help="Fixed max for color scale")
@@ -612,9 +728,19 @@ def main():
         print("  No split info detected \u2014 all points treated equally.")
 
     # --- Resolve color ---
-    color_vals, color_label, cmap = _resolve_color(df, args.color_by, args.cmap)
-    if color_vals is not None:
-        print(f"  Coloring by: {args.color_by} ({color_label})")
+    cat_labels, cat_config = _resolve_categorical_groups(df, args.color_by)
+    is_categorical = cat_labels is not None
+
+    if is_categorical:
+        color_vals, color_label, cmap = None, "", "viridis"
+        unique_groups = np.unique(cat_labels)
+        print(f"  Coloring by: {args.color_by} (categorical: {', '.join(unique_groups)})")
+        # Disable train/val marker split for categorical modes
+        roles = None
+    else:
+        color_vals, color_label, cmap = _resolve_color(df, args.color_by, args.cmap)
+        if color_vals is not None:
+            print(f"  Coloring by: {args.color_by} ({color_label})")
 
     # --- Column mapping ---
     m_pair = _pick_pair(df, [
@@ -654,6 +780,8 @@ def main():
             cmin=args.cmin,
             cmax=args.cmax,
             point_size=args.point_size,
+            cat_labels=cat_labels,
+            cat_config=cat_config,
         )
         stats.update({"metric": "m_dot", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
@@ -681,6 +809,8 @@ def main():
             cmin=args.cmin,
             cmax=args.cmax,
             point_size=args.point_size,
+            cat_labels=cat_labels,
+            cat_config=cat_config,
         )
         stats.update({"metric": "P_el", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)
@@ -708,6 +838,8 @@ def main():
             cmin=args.cmin,
             cmax=args.cmax,
             point_size=args.point_size,
+            cat_labels=cat_labels,
+            cat_config=cat_config,
         )
         stats.update({"metric": "T_dis", "x_col": meas, "y_col": calc, "source_file": src_name})
         summary.append(stats)

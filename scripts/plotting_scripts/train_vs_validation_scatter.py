@@ -175,6 +175,50 @@ def pair_train_validation(df: pd.DataFrame) -> pd.DataFrame:
     return paired
 
 
+def add_combined_metrics(paired: pd.DataFrame, Tdis_norm_K: float = 50.0) -> pd.DataFrame:
+    """
+    Add combined error metrics to the paired dataframe.
+    Combined = mean of (m_rel, P_rel, T_dis/Tdis_norm) for both train and val.
+    """
+    paired = paired.copy()
+
+    # MAE combined
+    if all(c in paired.columns for c in
+           ["train_mae_e_m_rel", "train_mae_e_P_rel", "train_mae_e_T_dis_K"]):
+        paired["train_mae_combined"] = (
+            paired["train_mae_e_m_rel"]
+            + paired["train_mae_e_P_rel"]
+            + paired["train_mae_e_T_dis_K"] / Tdis_norm_K
+        ) / 3.0
+
+    if all(c in paired.columns for c in
+           ["val_mae_e_m_rel", "val_mae_e_P_rel", "val_mae_e_T_dis_K"]):
+        paired["val_mae_combined"] = (
+            paired["val_mae_e_m_rel"]
+            + paired["val_mae_e_P_rel"]
+            + paired["val_mae_e_T_dis_K"] / Tdis_norm_K
+        ) / 3.0
+
+    # RMSE combined
+    if all(c in paired.columns for c in
+           ["train_rmse_e_m_rel", "train_rmse_e_P_rel", "train_rmse_e_T_dis_K"]):
+        paired["train_rmse_combined"] = (
+            paired["train_rmse_e_m_rel"]
+            + paired["train_rmse_e_P_rel"]
+            + paired["train_rmse_e_T_dis_K"] / Tdis_norm_K
+        ) / 3.0
+
+    if all(c in paired.columns for c in
+           ["val_rmse_e_m_rel", "val_rmse_e_P_rel", "val_rmse_e_T_dis_K"]):
+        paired["val_rmse_combined"] = (
+            paired["val_rmse_e_m_rel"]
+            + paired["val_rmse_e_P_rel"]
+            + paired["val_rmse_e_T_dis_K"] / Tdis_norm_K
+        ) / 3.0
+
+    return paired
+
+
 # =========================================================
 # Metric configuration
 # =========================================================
@@ -237,7 +281,34 @@ def get_metric_config(metric: str) -> list[dict]:
             },
         ]
 
-    raise ValueError(f"Unknown metric: {metric}. Use 'mae' or 'rmse'.")
+    if m in ("mae_combined", "combined_mae"):
+        return [
+            {
+                "train_col": "train_mae_combined",
+                "val_col": "val_mae_combined",
+                "title": "Aggregierter MAE\n(Ø über $\\dot{m}$, $P_{el}$, $T_{dis}/T_{norm}$)",
+                "axis_unit": "Ø MAE [%]",
+                "scale": 100.0,
+                "fmt": "{:.2f}",
+            },
+        ]
+
+    if m in ("rmse_combined", "combined_rmse"):
+        return [
+            {
+                "train_col": "train_rmse_combined",
+                "val_col": "val_rmse_combined",
+                "title": "Aggregierter RMSE\n(Ø über $\\dot{m}$, $P_{el}$, $T_{dis}/T_{norm}$)",
+                "axis_unit": "Ø RMSE [%]",
+                "scale": 100.0,
+                "fmt": "{:.2f}",
+            },
+        ]
+
+    raise ValueError(
+        f"Unknown metric: {metric}. "
+        f"Use 'mae', 'rmse', 'mae_combined' or 'rmse_combined'."
+    )
 
 
 # =========================================================
@@ -397,11 +468,16 @@ def plot_train_vs_validation(
     out_path: Path,
 ):
     """
-    Main plot function: creates figure with 3 subplots (m_dot, P_el, T_dis).
+    Main plot function: creates figure with 1 or 3 subplots depending on metric.
     """
     metric_cfgs = get_metric_config(metric)
+    n_plots = len(metric_cfgs)
 
-    fig, axes = plt.subplots(1, 3, figsize=(19, 7))
+    if n_plots == 1:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+        axes = [ax]
+    else:
+        fig, axes = plt.subplots(1, n_plots, figsize=(19, 7))
 
     for idx, cfg in enumerate(metric_cfgs):
         plot_scatter_cell(
@@ -416,7 +492,15 @@ def plot_train_vs_validation(
 
     build_legend(fig, paired)
 
-    metric_title = {"mae": "MAE", "rmse": "RMSE"}[metric.lower()]
+    metric_title_map = {
+        "mae": "MAE pro Zielgröße",
+        "rmse": "RMSE pro Zielgröße",
+        "mae_combined": "Aggregierter MAE",
+        "combined_mae": "Aggregierter MAE",
+        "rmse_combined": "Aggregierter RMSE",
+        "combined_rmse": "Aggregierter RMSE",
+    }
+    metric_title = metric_title_map.get(metric.lower(), metric.upper())
     fig.suptitle(
         f"Training vs. Validation ({metric_title})",
         fontsize=15, y=1.02,
@@ -438,9 +522,15 @@ def main():
     )
     ap.add_argument("--summary_dir", required=True, type=Path,
                     help="Directory containing validation_summary_*.csv files (with train_only and validation_only runs)")
-    ap.add_argument("--metric", required=True, choices=["mae", "rmse"])
+    ap.add_argument("--metric", required=True,
+                    choices=["mae", "rmse", "mae_combined", "rmse_combined"],
+                    help="Which error metric to plot. "
+                         "'mae'/'rmse' = 3 scatter plots (one per target). "
+                         "'mae_combined'/'rmse_combined' = 1 scatter plot aggregating all three targets.")
     ap.add_argument("--model", default=None,
-                    help="Filter: only include this model (original | modified)")
+                    help="Filter: only include this model (original | modified | oil_path)")
+    ap.add_argument("--Tdis_norm_K", type=float, default=50.0,
+                    help="Normalization for T_dis in combined metrics (default 50 K)")
     ap.add_argument("--exclude_all_oil", action="store_true",
                     help="Exclude configurations where validation_oil=all")
     ap.add_argument("--out_dir", default="results/train_vs_validation")
@@ -476,6 +566,11 @@ def main():
 
     if paired.empty:
         raise ValueError("No configurations remaining after filtering.")
+
+    # Compute combined metrics if needed
+    if args.metric.lower() in ("mae_combined", "rmse_combined", "combined_mae", "combined_rmse"):
+        paired = add_combined_metrics(paired, Tdis_norm_K=args.Tdis_norm_K)
+        print(f"  Tdis_norm_K (combined): {args.Tdis_norm_K} K")
 
     # Report what's plotted
     print(f"  Plotting {len(paired)} configurations:")

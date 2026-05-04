@@ -577,13 +577,13 @@ def plot_state_diagram(
 
     # --- Axes setup ---
     ax_ph.set_yscale("log")
-    ax_ph.set_xlabel("Spezifische Enthalpie $h$ [kJ/kg]")
-    ax_ph.set_ylabel("Druck $p$ [bar]")
+    ax_ph.set_xlabel("Spezifische Enthalpie $h$ in kJ/kg")
+    ax_ph.set_ylabel("Druck log($p$) in bar]")
     ax_ph.set_title("log($p$)-$h$-Diagramm")
     ax_ph.grid(True, which="both", linewidth=0.5, alpha=0.3)
 
-    ax_th.set_xlabel("Spezifische Enthalpie $h$ [kJ/kg]")
-    ax_th.set_ylabel("Temperatur $T$ [°C]")
+    ax_th.set_xlabel("Spezifische Enthalpie $h$ in kJ/kg")
+    ax_th.set_ylabel("Temperatur $T$ in °C")
     ax_th.set_title("$T$-$h$-Diagramm")
     ax_th.grid(True, linewidth=0.5, alpha=0.3)
 

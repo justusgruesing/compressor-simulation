@@ -19,6 +19,10 @@
 #   # Default grid (40x40), N=3600 rpm, SH=10 K, LPG68:
 #   python scripts/plotting_scripts/performance_map.py --params_csv results/final_results/Modified_LPG100/Fitting/fitted_params_lpg100_modified_ga_2026-03-28_092941.csv --oil LPG100 --metric all
 #
+#   # Plot difference between lubricants
+#   python scripts/plotting_scripts/performance_map.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --oil LPG68 --params_csv2 results/final_results/Modified_LPG100/Fitting/fitted_params_lpg100_modified_ga_2026-03-28_092941.csv --oil2 LPG100 --metric all
+#
+#
 #   # Custom grid and operating conditions:
 #   python scripts/plotting_scripts/performance_map.py \
 #       --params_csv results/ga_fit/fitted_params_lpg100_modified_ga_2026-03-19.csv \
@@ -48,9 +52,7 @@ from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified impo
 )
 
 # Optional: oil_path model
-# Note: the class in vclibpy is named Molinaroli_2017_Compressor_Oil_Path
-# (with underscore between Oil and Path). We try multiple naming variants
-# for robustness across vclibpy versions.
+
 try:
     from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
         Molinaroli_2017_Compressor_Oil_Path as Molinaroli_2017_Compressor_OilPath,
@@ -513,11 +515,104 @@ def plot_heatmap(
     cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
     cbar.set_label(cbar_label)
 
-    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ [°C]")
-    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ [°C]")
+    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ in °C")
+    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ in °C")
     ax.set_title(title)
 
     # Set limits to grid extent (no padding)
+    ax.set_xlim(T_evap_edges[0], T_evap_edges[-1])
+    ax.set_ylim(T_cond_edges[0], T_cond_edges[-1])
+
+    fig.tight_layout()
+    fig.savefig(out_path, format=out_path.suffix.lstrip("."), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"  [OK] Saved: {out_path}")
+
+
+def plot_heatmap_diff(
+    grid: np.ndarray,
+    T_evap_grid: np.ndarray,
+    T_cond_grid: np.ndarray,
+    metric_label: str,
+    cbar_label: str,
+    title: str,
+    out_path: Path,
+    cmap: str = "RdBu_r",
+    contour_levels: int = 10,
+):
+    """
+    Plot a diverging 2D heatmap for difference grids, centered at zero.
+    Positive = oil1 better, negative = oil2 better.
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    masked = np.ma.masked_invalid(grid)
+
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_bad(color="white")
+
+    finite_vals = grid[np.isfinite(grid)]
+    if len(finite_vals) == 0:
+        print(f"  [WARN] No valid data for {metric_label} diff")
+        plt.close(fig)
+        return
+
+    # Symmetric limits around zero
+    abs_max = float(np.nanpercentile(np.abs(finite_vals), 98))
+    if abs_max < 1e-12:
+        abs_max = 0.01
+
+    norm = TwoSlopeNorm(vmin=-abs_max, vcenter=0.0, vmax=abs_max)
+
+    dT_e = (T_evap_grid[1] - T_evap_grid[0]) if len(T_evap_grid) > 1 else 1.0
+    dT_c = (T_cond_grid[1] - T_cond_grid[0]) if len(T_cond_grid) > 1 else 1.0
+    T_evap_edges = np.concatenate([
+        T_evap_grid - dT_e / 2,
+        [T_evap_grid[-1] + dT_e / 2],
+    ])
+    T_cond_edges = np.concatenate([
+        T_cond_grid - dT_c / 2,
+        [T_cond_grid[-1] + dT_c / 2],
+    ])
+
+    mesh = ax.pcolormesh(
+        T_evap_edges, T_cond_edges, masked,
+        cmap=cmap_obj, norm=norm,
+        shading="flat",
+    )
+
+    # Contour lines
+    try:
+        E, C = np.meshgrid(T_evap_grid, T_cond_grid)
+        cs = ax.contour(
+            E, C, grid,
+            levels=contour_levels,
+            colors="black",
+            linewidths=0.7,
+            alpha=0.6,
+        )
+        ax.clabel(cs, inline=True, fontsize=9, fmt="%+.3f")
+    except Exception:
+        pass
+
+    # Zero contour (thick)
+    try:
+        E, C = np.meshgrid(T_evap_grid, T_cond_grid)
+        ax.contour(E, C, grid, levels=[0.0], colors="black",
+                   linewidths=2.0, alpha=0.9)
+    except Exception:
+        pass
+
+    cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
+    cbar.set_label(cbar_label)
+
+    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ in °C")
+    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ in °C")
+    ax.set_title(title)
+
     ax.set_xlim(T_evap_edges[0], T_evap_edges[-1])
     ax.set_ylim(T_cond_edges[0], T_cond_edges[-1])
 
@@ -538,6 +633,12 @@ def main():
 
     ap.add_argument("--params_csv", required=True, type=Path, help="Fitted parameter CSV")
     ap.add_argument("--oil", required=True, help="Oil name (LPG68 | LPG100)")
+
+    # Diff mode: provide a second params CSV + oil to compute and plot differences
+    ap.add_argument("--params_csv2", type=Path, default=None,
+                    help="Second fitted parameter CSV for diff mode (oil1 − oil2)")
+    ap.add_argument("--oil2", default=None,
+                    help="Second oil name for diff mode (LPG68 | LPG100)")
 
     # Model / fluid
     ap.add_argument("--model", default="auto", help="original | modified | oil_path | auto")
@@ -588,6 +689,12 @@ def main():
     if not args.params_csv.exists():
         raise FileNotFoundError(args.params_csv)
 
+    # Validate diff mode args
+    if (args.params_csv2 is not None) != (args.oil2 is not None):
+        raise ValueError("Diff mode requires both --params_csv2 and --oil2.")
+    if args.params_csv2 is not None and not args.params_csv2.exists():
+        raise FileNotFoundError(args.params_csv2)
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -622,6 +729,8 @@ def main():
     print(f"  T_cond range:    {args.T_cond_min} → {args.T_cond_max} °C")
     print(f"  Grid:            {args.n_grid}×{args.n_grid} = {args.n_grid**2} points")
     print(f"  Solver tol:      ftol={args.lsq_ftol:.0e}, xtol={args.lsq_xtol:.0e}, max_nfev={args.lsq_max_nfev}")
+    if args.params_csv2 is not None:
+        print(f"  Diff mode:       {args.oil} − {args.oil2}")
 
     # -------------------------
     # Metric selection
@@ -654,6 +763,7 @@ def main():
     # -------------------------
     # Compute grids
     # -------------------------
+    print("\n  Computing grid for oil 1 ...")
     eta_grid, lambda_grid, zeta_grid = compute_grid(
         med=med, model=args.model,
         refrigerant_name=args.refrigerant, oil_name=oil_name,
@@ -663,6 +773,35 @@ def main():
         lsq_ftol=args.lsq_ftol, lsq_xtol=args.lsq_xtol,
         lsq_max_nfev=args.lsq_max_nfev,
     )
+
+    # -------------------------
+    # Diff mode: compute second grid
+    # -------------------------
+    diff_mode = args.params_csv2 is not None and args.oil2 is not None
+    if diff_mode:
+        print(f"\n  Diff mode: computing grid for oil 2 ({args.oil2}) ...")
+
+        params2, params_meta2 = load_params_csv(args.params_csv2, args.model)
+        params2["f_ref"] = F_REF
+        params2["m_dot_ref"] = compute_m_dot_ref(med, V_h_m3)
+
+        m2 = str(args.model).lower().strip()
+        oil_name2 = args.oil2 if m2 in ("mod", "modified", "oil_path", "oilpath") else None
+
+        eta_grid2, lambda_grid2, zeta_grid2 = compute_grid(
+            med=med, model=args.model,
+            refrigerant_name=args.refrigerant, oil_name=oil_name2,
+            params=params2, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
+            T_evap_grid=T_evap_grid, T_cond_grid=T_cond_grid,
+            N_rpm=args.N_rpm, SH_K=args.SH_K, T_amb_C=args.T_amb_C,
+            lsq_ftol=args.lsq_ftol, lsq_xtol=args.lsq_xtol,
+            lsq_max_nfev=args.lsq_max_nfev,
+        )
+
+        # Compute differences (oil1 - oil2)
+        eta_diff = eta_grid - eta_grid2
+        lambda_diff = lambda_grid - lambda_grid2
+        zeta_diff = zeta_grid - zeta_grid2
 
     # -------------------------
     # Title base
@@ -719,6 +858,51 @@ def main():
         )
 
     # -------------------------
+    # Plot diff heatmaps (if diff mode)
+    # -------------------------
+    if diff_mode:
+        diff_subtitle = (
+            f"{args.model.capitalize()} | {args.refrigerant} | "
+            f"N={args.N_rpm:.0f} rpm | SH={args.SH_K:.0f} K"
+        )
+
+        diff_info = {
+            "eta_is": {
+                "grid": eta_diff,
+                "cbar_label": "$\\Delta\\eta_{is}$ (LPG 68 $-$ LPG 100)",
+                "title_label": f"$\\Delta$ Isentroper Wirkungsgrad ({args.oil} $-$ {args.oil2})",
+            },
+            "lambda_h": {
+                "grid": lambda_diff,
+                "cbar_label": "$\\Delta\\lambda_h$ (LPG 68 $-$ LPG 100)",
+                "title_label": f"$\\Delta$ Liefergrad ({args.oil} $-$ {args.oil2})",
+            },
+            "zeta_gl": {
+                "grid": zeta_diff,
+                "cbar_label": "$\\Delta\\zeta_{gl}$ (LPG 68 $-$ LPG 100)",
+                "title_label": f"$\\Delta$ Globaler Gütegrad ({args.oil} $-$ {args.oil2})",
+            },
+        }
+
+        oil2_tag = args.oil2.lower()
+        for metric_name in metrics_to_plot:
+            dinfo = diff_info[metric_name]
+            out_path = (
+                out_dir
+                / f"perfmap_diff_{metric_name}_{oil_tag}_vs_{oil2_tag}_N{int(args.N_rpm)}_SH{int(args.SH_K)}_{stamp}.{args.out_format}"
+            )
+            plot_heatmap_diff(
+                grid=dinfo["grid"],
+                T_evap_grid=T_evap_grid,
+                T_cond_grid=T_cond_grid,
+                metric_label=f"diff_{metric_name}",
+                cbar_label=dinfo["cbar_label"],
+                title=f"{dinfo['title_label']}\n{diff_subtitle}",
+                out_path=out_path,
+                contour_levels=args.contour_levels,
+            )
+
+    # -------------------------
     # Save data as CSV (always includes all three metrics)
     # -------------------------
     records = []
@@ -740,6 +924,34 @@ def main():
     data_csv = out_dir / f"perfmap_data_{oil_tag}_N{int(args.N_rpm)}_SH{int(args.SH_K)}_{stamp}.csv"
     pd.DataFrame.from_records(records).to_csv(data_csv, index=False)
     print(f"  [OK] Data saved: {data_csv}")
+
+    # Save diff data CSV
+    if diff_mode:
+        oil2_tag = args.oil2.lower()
+        diff_records = []
+        for j, T_cond_C in enumerate(T_cond_grid):
+            for i, T_evap_C in enumerate(T_evap_grid):
+                diff_records.append({
+                    "T_evap_C": T_evap_C,
+                    "T_cond_C": T_cond_C,
+                    "eta_is_oil1": eta_grid[j, i],
+                    "eta_is_oil2": eta_grid2[j, i],
+                    "delta_eta_is": eta_diff[j, i],
+                    "lambda_h_oil1": lambda_grid[j, i],
+                    "lambda_h_oil2": lambda_grid2[j, i],
+                    "delta_lambda_h": lambda_diff[j, i],
+                    "zeta_gl_oil1": zeta_grid[j, i],
+                    "zeta_gl_oil2": zeta_grid2[j, i],
+                    "delta_zeta_gl": zeta_diff[j, i],
+                    "N_rpm": args.N_rpm,
+                    "SH_K": args.SH_K,
+                    "oil1": args.oil,
+                    "oil2": args.oil2,
+                    "model": args.model,
+                })
+        diff_csv = out_dir / f"perfmap_diff_data_{oil_tag}_vs_{oil2_tag}_N{int(args.N_rpm)}_SH{int(args.SH_K)}_{stamp}.csv"
+        pd.DataFrame.from_records(diff_records).to_csv(diff_csv, index=False)
+        print(f"  [OK] Diff data saved: {diff_csv}")
 
     print(f"\nDone. Output dir: {out_dir}")
 

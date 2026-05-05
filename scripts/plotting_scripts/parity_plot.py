@@ -58,57 +58,87 @@ def _detect_split_role(df: pd.DataFrame):
 
 
 def _model_display_name(model_str: str) -> str:
-    """Map model strings to nice display names."""
+    """Map model strings to thesis display names."""
     s = str(model_str).strip().lower()
     mapping = {
-        "original": "Original",
-        "orig": "Original",
-        "modified": "Modified",
-        "mod": "Modified",
-        "oil_path": "Oil Path",
-        "oilpath": "Oil Path",
+        "original": "Basismodell",
+        "orig": "Basismodell",
+        "modified": "Modellausbaustufe I",
+        "mod": "Modellausbaustufe I",
+        "oil_path": "Modellausbaustufe II",
+        "oilpath": "Modellausbaustufe II",
     }
     return mapping.get(s, str(model_str).capitalize())
 
 
-def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
-    """Generate a title from metadata columns if available."""
-    parts = [f"Parity Plot: {metric_label}"]
+def _oil_display_name(oil_str: str) -> str:
+    """Map oil strings to thesis display names."""
+    s = str(oil_str).strip().lower().replace(" ", "")
+    mapping = {
+        "lpg68": "PAG68",
+        "lpg 68": "PAG68",
+        "lpg100": "PAG100",
+        "lpg 100": "PAG100",
+        "all": "beide",
+    }
+    return mapping.get(s, str(oil_str))
 
-    model = None
+
+# Target variable display names
+TARGET_DISPLAY = {
+    "m_dot": "Massenstrom",
+    "P_el": "Elektrische Leistung",
+    "T_dis": "Austrittstemperatur",
+}
+
+
+def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
+    """
+    Generate a title in thesis format:
+    Parity Plot: <Zielgröße> <Modell> | Kalibrierung: <params_oil> → Validierung: <val_oil>
+    """
+    # Map metric_label to display name
+    target_disp = TARGET_DISPLAY.get(metric_label, metric_label)
+
+    model = ""
     if "model" in df.columns:
         vals = df["model"].dropna().unique()
         if len(vals) == 1:
             model = _model_display_name(vals[0])
 
-    params_oil = None
+    params_oil = ""
     if "params_oil" in df.columns:
         vals = df["params_oil"].dropna().unique()
         if len(vals) == 1:
-            params_oil = str(vals[0])
+            params_oil = _oil_display_name(str(vals[0]))
 
-    val_oil = None
+    val_oil = ""
     if "oil" in df.columns:
         vals = df["oil"].dropna().unique()
         if len(vals) == 1:
-            val_oil = str(vals[0])
+            val_oil = _oil_display_name(str(vals[0]))
         elif len(vals) > 1:
-            val_oil = "all"
+            val_oil = "beide"
+    elif "oil_norm" in df.columns:
+        vals = df["oil_norm"].dropna().unique()
+        if len(vals) == 1:
+            val_oil = _oil_display_name(str(vals[0]))
+        elif len(vals) > 1:
+            val_oil = "beide"
 
-    subtitle_parts = []
+    # Build title
+    title_main = f"Parity Plot: {target_disp}"
     if model:
-        subtitle_parts.append(model)
+        title_main += f" {model}"
+
     if params_oil and val_oil:
-        subtitle_parts.append(f"Params: {params_oil} \u2192 Data: {val_oil}")
+        title_main += f" | Kalibrierung: {params_oil} \u2192 Validierung: {val_oil}"
     elif params_oil:
-        subtitle_parts.append(f"Params: {params_oil}")
+        title_main += f" | Kalibrierung: {params_oil}"
     elif val_oil:
-        subtitle_parts.append(f"\u00d6l: {val_oil}")
+        title_main += f" | Validierung: {val_oil}"
 
-    if subtitle_parts:
-        parts.append(" | ".join(subtitle_parts))
-
-    return "\n".join(parts)
+    return title_main
 
 
 # =========================================================
@@ -215,8 +245,8 @@ CATEGORICAL_COLORS = {
     },
     "oil": {
         "groups": {
-            "LPG 68": "#EC635C",        # EBC red
-            "LPG 100": "#4B81C4",       # EBC blue
+            "PAG68": "#EC635C",         # EBC red
+            "PAG100": "#4B81C4",        # EBC blue
         },
     },
 }
@@ -257,7 +287,7 @@ def _resolve_categorical_groups(df: pd.DataFrame, color_by: str):
             print("  [WARN] No oil/oil_norm column found for oil coloring.")
             return None, None
         raw = df[oil_col].fillna("").astype(str)
-        labels = raw.apply(lambda s: "LPG 68" if "68" in s else ("LPG 100" if "100" in s else s))
+        labels = raw.apply(lambda s: "PAG68" if "68" in s else ("PAG100" if "100" in s else s))
         return labels.to_numpy(), CATEGORICAL_COLORS["oil"]
 
     return None, None
@@ -287,14 +317,14 @@ def _scatter_categorical(
                 x[mask_in], y[mask_in],
                 s=s, alpha=0.85, marker="o",
                 color=color, edgecolors="none",
-                label=f"{group_name} (n={n_group})",
+                label=f"{group_name}",
             )
         if np.any(mask_out):
             ax.scatter(
                 x[mask_out], y[mask_out],
                 s=s, alpha=0.95, marker="s",
                 color=color, edgecolors="none",
-                label=f"{group_name} außerhalb {band_label} (n={n_out})",
+                label=f"{group_name} außerhalb {band_label}",
             )
 
 
@@ -338,7 +368,10 @@ def _scatter_split(
     point_size=None, fig=None, color_label="",
 ):
     """
-    Scatter with train (hollow) / validation (filled) distinction.
+    Scatter with train / validation distinction.
+    - Both roles present: train = hollow markers, validation = filled markers.
+    - Only one role: all points filled.
+    - Colorbar always shown when color_values are provided.
     """
     s = point_size
 
@@ -350,104 +383,146 @@ def _scatter_split(
 
     if has_split:
         is_train = (roles == "train")
-        is_val = ~is_train  # validation + unknown -> treated as validation
+        is_val = ~is_train
     else:
         is_train = np.zeros(len(x), dtype=bool)
         is_val = np.ones(len(x), dtype=bool)
+
+    n_train = int(is_train.sum())
+    n_val = int(is_val.sum())
+    train_only = (n_train > 0 and n_val == 0)
+    val_only = (n_val > 0 and n_train == 0)
+    both_roles = (n_train > 0 and n_val > 0)
 
     sc_ref = None  # reference scatter for colorbar
 
     if has_color:
         c = color_values
-
-        # --- Validation points (filled) ---
-        mask_val_in = is_val & ~outside
-        mask_val_out = is_val & outside
-
-        if np.any(mask_val_in):
-            sc_ref = ax.scatter(
-                x[mask_val_in], y[mask_val_in],
-                c=c[mask_val_in], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=s, alpha=0.90, marker="o", edgecolors="none",
-                label=f"Validation innerhalb {band_label}",
-            )
-        if np.any(mask_val_out):
-            sc = ax.scatter(
-                x[mask_val_out], y[mask_val_out],
-                c=c[mask_val_out], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=s, alpha=0.95, marker="s", edgecolors="none",
-                label=f"Validation au\u00dferhalb {band_label} (n={int(mask_val_out.sum())})",
-            )
-            if sc_ref is None:
-                sc_ref = sc
-
-        # --- Training points (hollow) ---
-        mask_tr_in = is_train & ~outside
-        mask_tr_out = is_train & outside
-
         cmap_obj = plt.get_cmap(cmap)
         norm = plt.Normalize(vmin=vmin, vmax=vmax)
 
-        if np.any(mask_tr_in):
-            edge_colors = cmap_obj(norm(c[mask_tr_in]))
-            ax.scatter(
-                x[mask_tr_in], y[mask_tr_in],
-                s=s, alpha=0.80, marker="o",
-                facecolors="none", edgecolors=edge_colors, linewidths=1.2,
-                label=f"Training innerhalb {band_label}",
-            )
-        if np.any(mask_tr_out):
-            edge_colors = cmap_obj(norm(c[mask_tr_out]))
-            ax.scatter(
-                x[mask_tr_out], y[mask_tr_out],
-                s=s, alpha=0.90, marker="s",
-                facecolors="none", edgecolors=edge_colors, linewidths=1.2,
-                label=f"Training au\u00dferhalb {band_label} (n={int(mask_tr_out.sum())})",
-            )
+        if train_only:
+            # All points filled (no role distinction needed)
+            mask_in = ~outside
+            mask_out = outside
+            if np.any(mask_in):
+                sc_ref = ax.scatter(
+                    x[mask_in], y[mask_in],
+                    c=c[mask_in], cmap=cmap, vmin=vmin, vmax=vmax,
+                    s=s, alpha=0.90, marker="o", edgecolors="none",
+                )
+            if np.any(mask_out):
+                sc = ax.scatter(
+                    x[mask_out], y[mask_out],
+                    c=c[mask_out], cmap=cmap, vmin=vmin, vmax=vmax,
+                    s=s, alpha=0.95, marker="s", edgecolors="none",
+                    label=f"außerhalb {band_label}",
+                )
+                if sc_ref is None:
+                    sc_ref = sc
+        else:
+            # Validation points (filled)
+            mask_val_in = is_val & ~outside
+            mask_val_out = is_val & outside
+            if np.any(mask_val_in):
+                sc_ref = ax.scatter(
+                    x[mask_val_in], y[mask_val_in],
+                    c=c[mask_val_in], cmap=cmap, vmin=vmin, vmax=vmax,
+                    s=s, alpha=0.90, marker="o", edgecolors="none",
+                    label="Validierung",
+                )
+            if np.any(mask_val_out):
+                sc = ax.scatter(
+                    x[mask_val_out], y[mask_val_out],
+                    c=c[mask_val_out], cmap=cmap, vmin=vmin, vmax=vmax,
+                    s=s, alpha=0.95, marker="s", edgecolors="none",
+                    label=f"Validierung außerhalb {band_label}",
+                )
+                if sc_ref is None:
+                    sc_ref = sc
 
-        # Colorbar
-        if sc_ref is not None and fig is not None:
-            cbar = fig.colorbar(sc_ref, ax=ax, pad=0.02)
+            # Training points (hollow)
+            mask_tr_in = is_train & ~outside
+            mask_tr_out = is_train & outside
+            if np.any(mask_tr_in):
+                edge_colors = cmap_obj(norm(c[mask_tr_in]))
+                ax.scatter(
+                    x[mask_tr_in], y[mask_tr_in],
+                    s=s, alpha=0.80, marker="o",
+                    facecolors="none", edgecolors=edge_colors, linewidths=1.2,
+                    label="Training",
+                )
+            if np.any(mask_tr_out):
+                edge_colors = cmap_obj(norm(c[mask_tr_out]))
+                ax.scatter(
+                    x[mask_tr_out], y[mask_tr_out],
+                    s=s, alpha=0.90, marker="s",
+                    facecolors="none", edgecolors=edge_colors, linewidths=1.2,
+                    label=f"Training außerhalb {band_label}",
+                )
+
+        # Colorbar — always show when has_color, using ScalarMappable as fallback
+        if fig is not None:
+            if sc_ref is not None:
+                cbar = fig.colorbar(sc_ref, ax=ax, pad=0.02)
+            else:
+                sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+                sm.set_array([])
+                cbar = fig.colorbar(sm, ax=ax, pad=0.02)
             cbar.set_label(color_label)
 
     else:
         # No color variable -> use default colors
 
-        # --- Validation (filled) ---
-        mask_val_in = is_val & ~outside
-        mask_val_out = is_val & outside
+        if train_only:
+            # All points filled
+            mask_in = ~outside
+            mask_out = outside
+            if np.any(mask_in):
+                ax.scatter(
+                    x[mask_in], y[mask_in],
+                    s=s, alpha=0.85, marker="o",
+                )
+            if np.any(mask_out):
+                ax.scatter(
+                    x[mask_out], y[mask_out],
+                    s=s, alpha=0.95, marker="s", linewidths=0.9,
+                    label=f"außerhalb {band_label}",
+                )
+        else:
+            # Validation (filled)
+            mask_val_in = is_val & ~outside
+            mask_val_out = is_val & outside
+            if np.any(mask_val_in):
+                ax.scatter(
+                    x[mask_val_in], y[mask_val_in],
+                    s=s, alpha=0.85, marker="o",
+                    label="Validierung",
+                )
+            if np.any(mask_val_out):
+                ax.scatter(
+                    x[mask_val_out], y[mask_val_out],
+                    s=s, alpha=0.95, marker="s", linewidths=0.9,
+                    label=f"Validierung außerhalb {band_label}",
+                )
 
-        if np.any(mask_val_in):
-            ax.scatter(
-                x[mask_val_in], y[mask_val_in],
-                s=s, alpha=0.85, marker="o",
-                label=f"Validation innerhalb {band_label}",
-            )
-        if np.any(mask_val_out):
-            ax.scatter(
-                x[mask_val_out], y[mask_val_out],
-                s=s, alpha=0.95, marker="s", linewidths=0.9,
-                label=f"Validation au\u00dferhalb {band_label} (n={int(mask_val_out.sum())})",
-            )
-
-        # --- Training (hollow) ---
-        mask_tr_in = is_train & ~outside
-        mask_tr_out = is_train & outside
-
-        if np.any(mask_tr_in):
-            ax.scatter(
-                x[mask_tr_in], y[mask_tr_in],
-                s=s, alpha=0.75, marker="o",
-                facecolors="none", edgecolors="C0", linewidths=1.2,
-                label=f"Training innerhalb {band_label}",
-            )
-        if np.any(mask_tr_out):
-            ax.scatter(
-                x[mask_tr_out], y[mask_tr_out],
-                s=s, alpha=0.85, marker="s",
-                facecolors="none", edgecolors="C1", linewidths=1.2,
-                label=f"Training au\u00dferhalb {band_label} (n={int(mask_tr_out.sum())})",
-            )
+            # Training (hollow)
+            mask_tr_in = is_train & ~outside
+            mask_tr_out = is_train & outside
+            if np.any(mask_tr_in):
+                ax.scatter(
+                    x[mask_tr_in], y[mask_tr_in],
+                    s=s, alpha=0.75, marker="o",
+                    facecolors="none", edgecolors="C0", linewidths=1.2,
+                    label="Training",
+                )
+            if np.any(mask_tr_out):
+                ax.scatter(
+                    x[mask_tr_out], y[mask_tr_out],
+                    s=s, alpha=0.85, marker="s",
+                    facecolors="none", edgecolors="C1", linewidths=1.2,
+                    label=f"Training außerhalb {band_label}",
+                )
 
 
 def parity_plot_rel_band(
@@ -528,18 +603,6 @@ def parity_plot_rel_band(
 
     ax.set_title(title)
 
-    info_txt = (
-        f"Au\u00dferhalb \u00b1{int(band*100)}%: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
-        f"Fehlerspanne: {err_min_pct:.2f}% bis {err_max_pct:.2f}%"
-    )
-    ax.text(
-        0.02, 0.98, info_txt,
-        transform=ax.transAxes,
-        ha="left", va="top",
-        fontsize=11,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="0.7"),
-    )
-
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_xlim(lo, hi)
@@ -551,7 +614,10 @@ def parity_plot_rel_band(
     fig.savefig(out_path, format=out_path.suffix.lstrip("."))
     plt.close(fig)
 
-    return {"n_total": n_total, "n_outside": n_out, "frac_outside": frac_out}
+    return {
+        "n_total": n_total, "n_outside": n_out, "frac_outside": frac_out,
+        "err_min_pct": err_min_pct, "err_max_pct": err_max_pct,
+    }
 
 
 def parity_plot_abs_band(
@@ -629,17 +695,8 @@ def parity_plot_abs_band(
 
     ax.set_title(title)
 
-    info_txt = (
-        f"Au\u00dferhalb \u00b1{band_abs:.0f} K: {n_out} / {n_total} ({frac_out*100:.1f}%)\n"
-        f"Fehlerspanne: {float(np.min(diff)):.2f} K bis {float(np.max(diff)):.2f} K"
-    )
-    ax.text(
-        0.02, 0.98, info_txt,
-        transform=ax.transAxes,
-        ha="left", va="top",
-        fontsize=11,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="0.7"),
-    )
+    err_min_K = float(np.min(diff))
+    err_max_K = float(np.max(diff))
 
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
@@ -652,7 +709,10 @@ def parity_plot_abs_band(
     fig.savefig(out_path, format=out_path.suffix.lstrip("."))
     plt.close(fig)
 
-    return {"n_total": n_total, "n_outside": n_out, "frac_outside": frac_out}
+    return {
+        "n_total": n_total, "n_outside": n_out, "frac_outside": frac_out,
+        "err_min_K": err_min_K, "err_max_K": err_max_K,
+    }
 
 
 # =========================================================

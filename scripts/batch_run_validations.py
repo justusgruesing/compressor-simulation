@@ -27,7 +27,7 @@
 #
 # Examples:
 #   # Default (train_only + validation_only, sequential):
-#   python scripts/batch_run_validations.py
+#   python scripts/batch_run_validations.py --filter_model modified
 #
 #   # Including 'all' selection mode and 4 parallel workers:
 #   python scripts/batch_run_validations.py --include_all_mode --n_workers 4

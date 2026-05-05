@@ -17,6 +17,9 @@
 #   python scripts/plotting_scripts/cross_validation_heatmap.py \
 #       --mode model_comparison --params_oil LPG68 --metric mae
 #
+#   # Cross-validation: for original model
+#   python scripts/plotting_scripts/cross_validation_heatmap.py --summary_dir results/validation/original/summary --metric rmse --selection_mode train_only
+#
 #   # Model comparison with combined metric
 #   python scripts/plotting_scripts/cross_validation_heatmap.py \
 #       --mode model_comparison --params_oil LPG68 --metric mae_combined \
@@ -25,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -77,7 +81,8 @@ def _norm_oil(s: str) -> str:
 # =========================================================
 # Data loading
 # =========================================================
-def load_summaries(summary_dir: Path, model_filter: str | None = None) -> pd.DataFrame:
+def load_summaries(summary_dir: Path, model_filter: str | None = None,
+                   selection_mode_filter: str | None = None) -> pd.DataFrame:
     """
     Load all validation_summary_*.csv files in the directory and concatenate them.
     """
@@ -90,10 +95,18 @@ def load_summaries(summary_dir: Path, model_filter: str | None = None) -> pd.Dat
     print(f"  Found {len(csv_files)} summary files")
 
     dfs = []
+    # Pattern: ..._{selection_mode}_{timestamp}.csv
+    _MODE_PATTERN = re.compile(r"_(train_only|validation_only|all)_\d{4}-\d{2}-\d{2}_\d{6}$")
+
     for f in csv_files:
         try:
             df = pd.read_csv(f)
             df["_source_file"] = f.name
+
+            # Extract selection_mode from filename
+            match = _MODE_PATTERN.search(f.stem)
+            df["selection_mode"] = match.group(1) if match else "unknown"
+
             dfs.append(df)
         except Exception as e:
             print(f"  [WARN] Could not read {f.name}: {e}")
@@ -114,6 +127,15 @@ def load_summaries(summary_dir: Path, model_filter: str | None = None) -> pd.Dat
         after = len(combined)
         if after < before:
             print(f"  Filtered to model '{model_filter}': {after}/{before} rows")
+
+    # Filter by selection_mode
+    if selection_mode_filter is not None and "selection_mode" in combined.columns:
+        before = len(combined)
+        combined = combined[
+            combined["selection_mode"].astype(str).str.lower().str.strip()
+            == selection_mode_filter.lower()
+        ].copy()
+        print(f"  Filtered to selection_mode='{selection_mode_filter}': {len(combined)}/{before} rows")
 
     return combined
 
@@ -169,11 +191,16 @@ def load_summaries_multi_model(
             continue
 
         csv_files = sorted(summary_dir.glob("validation_summary_*.csv"))
+        _MODE_PAT = re.compile(r"_(train_only|validation_only|all)_\d{4}-\d{2}-\d{2}_\d{6}$")
         for f in csv_files:
             try:
                 df = pd.read_csv(f)
                 df["_source_file"] = f.name
                 df["_source_model_dir"] = model_key
+
+                match = _MODE_PAT.search(f.stem)
+                df["selection_mode"] = match.group(1) if match else "unknown"
+
                 dfs.append(df)
                 n_files += 1
             except Exception as e:
@@ -285,21 +312,21 @@ def get_metric_config(metric: str) -> list[dict]:
             {
                 "col": "mae_e_m_rel",
                 "title": "MAE Massenstrom",
-                "cbar_label": "MAE $\\dot{m}$ [%]",
+                "cbar_label": "MAE $\\dot{m}$ in %",
                 "scale": 100.0,  # convert fraction → percent
                 "fmt": "{:.2f}",
             },
             {
                 "col": "mae_e_P_rel",
                 "title": "MAE elektrische Leistung",
-                "cbar_label": "MAE $P_{el}$ [%]",
+                "cbar_label": "MAE $P_{el}$ in %",
                 "scale": 100.0,
                 "fmt": "{:.2f}",
             },
             {
                 "col": "mae_e_T_dis_K",
                 "title": "MAE Austrittstemperatur",
-                "cbar_label": "MAE $T_{dis}$ [K]",
+                "cbar_label": "MAE $T_{dis}$ in K",
                 "scale": 1.0,
                 "fmt": "{:.2f}",
             },
@@ -310,21 +337,21 @@ def get_metric_config(metric: str) -> list[dict]:
             {
                 "col": "rmse_e_m_rel",
                 "title": "RMSE Massenstrom",
-                "cbar_label": "RMSE $\\dot{m}$ [%]",
+                "cbar_label": "RMSE $\\dot{m}$ in %",
                 "scale": 100.0,
                 "fmt": "{:.2f}",
             },
             {
                 "col": "rmse_e_P_rel",
                 "title": "RMSE elektrische Leistung",
-                "cbar_label": "RMSE $P_{el}$ [%]",
+                "cbar_label": "RMSE $P_{el}$ in %",
                 "scale": 100.0,
                 "fmt": "{:.2f}",
             },
             {
                 "col": "rmse_e_T_dis_K",
                 "title": "RMSE Austrittstemperatur",
-                "cbar_label": "RMSE $T_{dis}$ [K]",
+                "cbar_label": "RMSE $T_{dis}$ in K",
                 "scale": 1.0,
                 "fmt": "{:.2f}",
             },
@@ -335,7 +362,7 @@ def get_metric_config(metric: str) -> list[dict]:
             {
                 "col": "_combined_mae",
                 "title": "Aggregierter MAE\n(Ø über $\\dot{m}$, $P_{el}$, $T_{dis}/T_{norm}$)",
-                "cbar_label": "Ø MAE [%]",
+                "cbar_label": "Ø MAE in %",
                 "scale": 100.0,
                 "fmt": "{:.2f}",
             },
@@ -346,7 +373,7 @@ def get_metric_config(metric: str) -> list[dict]:
             {
                 "col": "_combined_rmse",
                 "title": "Aggregierter RMSE\n(Ø über $\\dot{m}$, $P_{el}$, $T_{dis}/T_{norm}$)",
-                "cbar_label": "Ø RMSE [%]",
+                "cbar_label": "Ø RMSE in %",
                 "scale": 100.0,
                 "fmt": "{:.2f}",
             },
@@ -436,8 +463,8 @@ def plot_heatmap_cell(
     ax.set_xticklabels([OIL_DISPLAY[o] for o in OIL_ORDER])
     ax.set_yticklabels([OIL_DISPLAY[o] for o in OIL_ORDER])
 
-    ax.set_xlabel("Validierungs-Daten")
-    ax.set_ylabel("Parameter gefittet auf")
+    ax.set_xlabel("Validierungs auf")
+    ax.set_ylabel("Kalibrierung auf")
 
     ax.set_title(title, fontsize=13)
 
@@ -502,7 +529,7 @@ def plot_cross_validation_matrix(
     }
     metric_title = metric_title_map.get(metric.lower(), metric.upper())
     fig.suptitle(
-        f"Cross-Validation ({metric_title}) — {model_name.capitalize()} Modell",
+        f"Cross-Validierung ({metric_title}) — {model_name.capitalize()} Modell",
         fontsize=15, y=1.02,
     )
 
@@ -704,7 +731,8 @@ def main():
         if not args.summary_dir.exists():
             raise FileNotFoundError(args.summary_dir)
 
-        df = load_summaries(args.summary_dir, model_filter=args.model)
+        df = load_summaries(args.summary_dir, model_filter=args.model,
+                            selection_mode_filter=args.selection_mode)
 
         # Compute combined metrics if needed
         if args.metric.lower() in ("mae_combined", "rmse_combined"):

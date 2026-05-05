@@ -19,7 +19,7 @@
 #   python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/ga_fit/fitted_params_lpg68_oil_path_ga_2026-03-26.csv --model oil_path --oil LPG68 --selection_mode all
 #
 # Example (new mode, cross-validation: params from LPG68, validate on LPG100):
-#    python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/final_results/Modified_LPG100/Fitting/fitted_params_lpg100_modified_ga_2026-03-28_092941.csv --model modified --oil LPG68 --selection_mode train_only
+#    python scripts/validation.py --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --params_csv results/final_results/Molinaroli_LPG68/Fitting/fitted_params_lpg68_original_ga_2026-03-08_101308.csv --model original --oil LPG68
 
 from __future__ import annotations
 

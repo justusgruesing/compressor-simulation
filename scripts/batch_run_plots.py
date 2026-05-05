@@ -40,7 +40,7 @@
 #   python scripts/batch_run_plots.py --filter_model modified --n_workers 4
 #
 #   # Skip error analysis, only parity plots:
-#   python scripts/batch_run_plots.py --skip_error_analysis
+#   python scripts/batch_run_plots.py --skip_error_analysis --filter_model original
 #
 #   # Dry-run:
 #   python scripts/batch_run_plots.py --dry_run

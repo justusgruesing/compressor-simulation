@@ -18,7 +18,7 @@
 #       --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv
 #
 #   # Side-by-side:
-#   python scripts/plotting_scripts/operating_point_diagram.py --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --mode split --use_measured --filter_oil LPG68 --color_by superheat_cbar --show_limits
+#   python scripts/plotting_scripts/operating_point_diagram.py --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --op_rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --mode split --use_measured --filter_oil LPG68 --color_by superheat_cbar --show_limits --xlim -5 30 --ylim 10 85
 #
 #   # Color by superheat:
 #   python scripts/plotting_scripts/operating_point_diagram.py \
@@ -63,51 +63,38 @@ OIL_DISPLAY = {"LPG68": "LPG 68", "LPG100": "LPG 100"}
 # =========================================================
 # Operating limits (from Cui, Fig. 3.6 / Table 3.4)
 # =========================================================
-# Eingeschränkte Betriebsgrenzen — red polygon vertices (T_evap, T_cond)
-# Read from Cui Fig. 3.6, clockwise from bottom-left
-OPERATING_ENVELOPE = np.array([
-    [-30.0, 10.0],
-    [-30.0, 65.0],
+# Upper/right envelope vertices from manufacturer (T_evap, T_cond)
+# These define the outer boundary where it is NOT determined by
+# min-pressure or safety limits. Order: top-left → top-right → bottom-right.
+ENVELOPE_UPPER = np.array([
     [-22.0, 68.0],
     [ -5.0, 80.0],
     [ 10.0, 80.0],
     [ 25.0, 70.0],
-    [ 25.0, 25.0],
-    [ 10.0, 10.0],
-    [-30.0, 10.0],  # close polygon
 ])
 
 # Safety system limits (Table 3.4)
-P_SUC_MIN_BAR = 2.0    # p1 untere Grenze → yellow vertical line at T_sat(2 bar)
-P_DIS_MIN_BAR = 2.0    # p2 untere Grenze
-P_DIS_MAX_BAR = 42.0   # p2 obere Grenze
-DELTA_P_MIN_BAR = 3.9   # Mindestdruckunterschied (manufacturer spec)
+P_SUC_MIN_BAR = 2.0     # p1 untere Grenze → left vertical boundary
+DELTA_P_MIN_BAR = 3.9    # Mindestdruckunterschied → bottom curve
 
-LIMIT_COLORS = {
-    "envelope": "#D32F2F",       # red (matching Cui plot)
-    "min_pressure": "#4CAF50",   # green
-    "safety": "#FFC107",         # yellow/amber
-}
+LIMIT_COLOR = "#D32F2F"  # red
 
 
-def compute_min_pressure_curve(refrigerant="propane", delta_p_bar=3.9,
-                                T_evap_range=(-30, 27), n_points=80):
+def _compute_min_pressure_curve(refrigerant="propane", delta_p_bar=3.9,
+                                 T_evap_range=(-30, 27), n_points=100):
     """
     Compute T_cond = f(T_evap) where p_cond - p_evap = delta_p_bar.
     Returns arrays (T_evap_C, T_cond_C).
     """
     from vclibpy.media import RefProp
-
     med = RefProp(fluid_name=refrigerant)
     T_evap_arr = np.linspace(T_evap_range[0], T_evap_range[1], n_points)
-    T_cond_arr = []
-    T_evap_ok = []
-
+    T_evap_ok, T_cond_arr = [], []
     for T_evap_C in T_evap_arr:
         try:
             T_evap_K = T_evap_C + 273.15
             st_evap = med.calc_state("TQ", T_evap_K, 1.0)
-            p_evap = float(st_evap.p) / 1e5  # Pa → bar
+            p_evap = float(st_evap.p) / 1e5
             p_cond_min = p_evap + delta_p_bar
             st_cond = med.calc_state("PQ", p_cond_min * 1e5, 0.0)
             T_cond_C = float(st_cond.T) - 273.15
@@ -115,17 +102,12 @@ def compute_min_pressure_curve(refrigerant="propane", delta_p_bar=3.9,
             T_cond_arr.append(T_cond_C)
         except Exception:
             pass
-
     return np.array(T_evap_ok), np.array(T_cond_arr)
 
 
-def compute_safety_T_evap(refrigerant="propane", p_min_bar=2.0):
-    """
-    Compute T_evap at which p_sat = p_min (safety system lower pressure limit).
-    Returns T_evap in °C.
-    """
+def _compute_safety_T_evap(refrigerant="propane", p_min_bar=2.0):
+    """Compute T_evap at which p_sat = p_min."""
     from vclibpy.media import RefProp
-
     med = RefProp(fluid_name=refrigerant)
     try:
         st = med.calc_state("PQ", p_min_bar * 1e5, 1.0)
@@ -134,57 +116,108 @@ def compute_safety_T_evap(refrigerant="propane", p_min_bar=2.0):
         return -25.3  # fallback for propane
 
 
-def draw_operating_limits(ax, refrigerant="propane", show_envelope=True,
-                           show_min_pressure=True, show_safety=True):
+def build_unified_boundary(refrigerant="propane"):
     """
-    Draw operating limit boundaries on the given axes.
+    Build a single closed polygon representing the combined operating boundary.
 
-    - Red solid polygon: eingeschränkte Betriebsgrenzen (manufacturer envelope)
-    - Green dashed: Mindestdruckgrenze (p_cond - p_suc >= 3.9 bar)
-    - Yellow dashed: interne Sicherheitsgrenze (p_suc >= 2 bar → T_evap_min)
+    The boundary is assembled from three constraints:
+      - Left edge: T_evap >= T_sat(p_suc_min)  (safety system)
+      - Bottom edge: T_cond >= T_cond_min(T_evap) from Δp >= 3.9 bar  (min pressure)
+      - Upper/right edges: manufacturer envelope
+
+    Returns polygon as (N, 2) array of (T_evap, T_cond) vertices.
+    """
+    T_evap_safety = _compute_safety_T_evap(refrigerant, P_SUC_MIN_BAR)
+
+    # Min-pressure curve from safety limit to right envelope edge
+    T_evap_mp, T_cond_mp = _compute_min_pressure_curve(
+        refrigerant=refrigerant, delta_p_bar=DELTA_P_MIN_BAR,
+        T_evap_range=(T_evap_safety, ENVELOPE_UPPER[-1, 0]),
+        n_points=80,
+    )
+
+    # The upper envelope has a top-right corner; the min-pressure curve
+    # ends at the right side. We need to find the T_cond of the envelope's
+    # bottom-right corner to connect properly.
+    T_evap_right = float(ENVELOPE_UPPER[-1, 0])  # 25°C
+    T_cond_right_mp = float(T_cond_mp[-1]) if len(T_cond_mp) > 0 else 25.0
+
+    # Build the envelope top portion:
+    # The upper envelope's left edge starts at T_evap_safety.
+    # Interpolate T_cond at T_evap_safety from the leftmost upper envelope segment.
+    env_T_evap_left = ENVELOPE_UPPER[0, 0]
+    env_T_cond_left = ENVELOPE_UPPER[0, 1]
+    env_T_evap_next = ENVELOPE_UPPER[1, 0] if len(ENVELOPE_UPPER) > 1 else env_T_evap_left
+    env_T_cond_next = ENVELOPE_UPPER[1, 1] if len(ENVELOPE_UPPER) > 1 else env_T_cond_left
+
+    # If safety limit is to the left of the first envelope point, extend vertically
+    if T_evap_safety <= env_T_evap_left:
+        T_cond_top_at_safety = env_T_cond_left
+    else:
+        # Interpolate linearly
+        frac = (T_evap_safety - env_T_evap_left) / max(1e-9, env_T_evap_next - env_T_evap_left)
+        T_cond_top_at_safety = env_T_cond_left + frac * (env_T_cond_next - env_T_cond_left)
+
+    # T_cond at safety T_evap on the min-pressure curve
+    T_cond_bot_at_safety = float(T_cond_mp[0]) if len(T_cond_mp) > 0 else 10.0
+
+    # Assemble polygon clockwise:
+    # 1. Left edge: vertical from bottom (min-pressure) to top (envelope) at T_evap_safety
+    # 2. Upper envelope: from safety to right
+    # 3. Right edge: vertical from envelope down to min-pressure curve
+    # 4. Bottom: min-pressure curve from right to left (reversed)
+
+    vertices = []
+
+    # Bottom-left corner (safety × min-pressure intersection)
+    vertices.append([T_evap_safety, T_cond_bot_at_safety])
+
+    # Left edge up to envelope top
+    vertices.append([T_evap_safety, T_cond_top_at_safety])
+
+    # Upper envelope points (only those to the right of safety limit)
+    for pt in ENVELOPE_UPPER:
+        if pt[0] >= T_evap_safety:
+            vertices.append([pt[0], pt[1]])
+
+    # Right edge down to min-pressure curve
+    vertices.append([T_evap_right, T_cond_right_mp])
+
+    # Bottom edge: min-pressure curve reversed (right to left)
+    for te, tc in zip(T_evap_mp[::-1], T_cond_mp[::-1]):
+        vertices.append([te, tc])
+
+    # Close polygon
+    vertices.append(vertices[0])
+
+    return np.array(vertices), T_evap_safety
+
+
+def draw_operating_limits(ax, refrigerant="propane"):
+    """
+    Draw the unified operating boundary as a single red solid polygon.
+    Returns legend handles.
     """
     legend_handles = []
 
-    # 1. Red envelope polygon
-    if show_envelope:
-        ax.plot(OPERATING_ENVELOPE[:, 0], OPERATING_ENVELOPE[:, 1],
-                color=LIMIT_COLORS["envelope"], linewidth=1.8,
-                linestyle="-", zorder=1, alpha=0.7)
-        ax.fill(OPERATING_ENVELOPE[:, 0], OPERATING_ENVELOPE[:, 1],
-                color=LIMIT_COLORS["envelope"], alpha=0.04, zorder=0)
+    try:
+        boundary, T_evap_safety = build_unified_boundary(refrigerant)
+
+        # Fill
+        ax.fill(boundary[:, 0], boundary[:, 1],
+                color=LIMIT_COLOR, alpha=0.06, zorder=0)
+
+        # Solid red outline
+        ax.plot(boundary[:, 0], boundary[:, 1],
+                color=LIMIT_COLOR, linewidth=1.8,
+                linestyle="-", zorder=1, alpha=0.8)
+
         legend_handles.append(
-            Line2D([0], [0], color=LIMIT_COLORS["envelope"], linewidth=1.8,
-                   label="Eingeschränkte Betriebsgrenzen"))
+            Line2D([0], [0], color=LIMIT_COLOR, linewidth=1.8,
+                   label="Betriebsgrenzen"))
 
-    # 2. Green dashed: minimum pressure difference
-    if show_min_pressure:
-        try:
-            T_evap_mp, T_cond_mp = compute_min_pressure_curve(
-                refrigerant=refrigerant, delta_p_bar=DELTA_P_MIN_BAR)
-            if len(T_evap_mp) > 0:
-                ax.plot(T_evap_mp, T_cond_mp,
-                        color=LIMIT_COLORS["min_pressure"], linewidth=1.8,
-                        linestyle="--", zorder=1, alpha=0.8)
-                legend_handles.append(
-                    Line2D([0], [0], color=LIMIT_COLORS["min_pressure"],
-                           linewidth=1.8, linestyle="--",
-                           label=f"Mindestdruckgrenze ($\\Delta p$ ≥ {DELTA_P_MIN_BAR} bar)"))
-        except Exception as e:
-            print(f"  [WARN] Could not compute min pressure curve: {e}")
-
-    # 3. Yellow dashed: safety system T_evap limit
-    if show_safety:
-        try:
-            T_evap_safety = compute_safety_T_evap(
-                refrigerant=refrigerant, p_min_bar=P_SUC_MIN_BAR)
-            ax.axvline(T_evap_safety, color=LIMIT_COLORS["safety"],
-                       linewidth=1.8, linestyle="--", zorder=1, alpha=0.8)
-            legend_handles.append(
-                Line2D([0], [0], color=LIMIT_COLORS["safety"],
-                       linewidth=1.8, linestyle="--",
-                       label=f"Sicherheitsgrenze ($p_{{suc}}$ ≥ {P_SUC_MIN_BAR} bar)"))
-        except Exception as e:
-            print(f"  [WARN] Could not compute safety limit: {e}")
+    except Exception as e:
+        print(f"  [WARN] Could not draw operating limits: {e}")
 
     return legend_handles
 
@@ -304,7 +337,8 @@ def load_measured_points(
 # =========================================================
 def plot_combined(df, out_path, color_by=None, point_size=120,
                   continuous_cbar=False, cmap="viridis", cbar_label="",
-                  show_limits=False, refrigerant="propane"):
+                  show_limits=False, refrigerant="propane",
+                  xlim=None, ylim=None):
     fig, ax = plt.subplots(figsize=(9, 8))
 
     train = df[df["is_train"]].copy()
@@ -334,7 +368,7 @@ def plot_combined(df, out_path, color_by=None, point_size=120,
     if show_limits:
         limit_handles = draw_operating_limits(ax, refrigerant=refrigerant)
 
-    _setup_axes(ax, df)
+    _setup_axes(ax, df, xlim=xlim, ylim=ylim)
     ax.set_title("Betriebspunkte — Training & Validierung", fontsize=13)
 
     # Merge limit legend handles with existing legend
@@ -355,7 +389,8 @@ def plot_combined(df, out_path, color_by=None, point_size=120,
 # =========================================================
 def plot_split(df, out_path, color_by=None, point_size=120,
                continuous_cbar=False, cmap="viridis", cbar_label="",
-               show_limits=False, refrigerant="propane"):
+               show_limits=False, refrigerant="propane",
+               xlim=None, ylim=None):
     fig, (ax_train, ax_val) = plt.subplots(1, 2, figsize=(16, 7),
                                             sharey=True, sharex=True)
 
@@ -397,8 +432,8 @@ def plot_split(df, out_path, color_by=None, point_size=120,
         draw_operating_limits(ax_train, refrigerant=refrigerant)
         limit_handles = draw_operating_limits(ax_val, refrigerant=refrigerant)
 
-    _setup_axes(ax_train, df)
-    _setup_axes(ax_val, df)
+    _setup_axes(ax_train, df, xlim=xlim, ylim=ylim)
+    _setup_axes(ax_val, df, xlim=xlim, ylim=ylim)
 
     ax_train.set_title(f"Training (n={len(train)})", fontsize=13)
     ax_val.set_title(f"Validierung (n={len(val)})", fontsize=13)
@@ -609,7 +644,7 @@ def _plot_continuous_cbar_single(ax, data, color_col, point_size, marker,
 # =========================================================
 # Axes setup
 # =========================================================
-def _setup_axes(ax, df):
+def _setup_axes(ax, df, xlim=None, ylim=None):
     ax.set_xlabel("Verdampfungstemperatur $T_{Verd}$ in °C")
     ax.set_ylabel("Kondensationstemperatur $T_{Kond}$ in °C")
     ax.grid(True, linewidth=0.5, alpha=0.3)
@@ -631,10 +666,17 @@ def _setup_axes(ax, df):
     if len(tick_cond) <= 15:
         ax.set_yticks(tick_cond)
 
-    pad_x = max(2, (max(t_evap_vals) - min(t_evap_vals)) * 0.08)
-    pad_y = max(2, (max(t_cond_vals) - min(t_cond_vals)) * 0.08)
-    ax.set_xlim(min(t_evap_vals) - pad_x, max(t_evap_vals) + pad_x)
-    ax.set_ylim(min(t_cond_vals) - pad_y, max(t_cond_vals) + pad_y)
+    if xlim is not None:
+        ax.set_xlim(float(xlim[0]), float(xlim[1]))
+    else:
+        pad_x = max(2, (max(t_evap_vals) - min(t_evap_vals)) * 0.08)
+        ax.set_xlim(min(t_evap_vals) - pad_x, max(t_evap_vals) + pad_x)
+
+    if ylim is not None:
+        ax.set_ylim(float(ylim[0]), float(ylim[1]))
+    else:
+        pad_y = max(2, (max(t_cond_vals) - min(t_cond_vals)) * 0.08)
+        ax.set_ylim(min(t_cond_vals) - pad_y, max(t_cond_vals) + pad_y)
 
 
 # =========================================================
@@ -667,6 +709,12 @@ def main():
                     help="Draw operating limit boundaries (Cui Fig. 3.6): "
                          "manufacturer envelope, min pressure difference, "
                          "safety system limit. Requires REFPROP for pressure curves.")
+
+    # Axis limits
+    ap.add_argument("--xlim", type=float, nargs=2, default=None, metavar=("XMIN", "XMAX"),
+                    help="Override x-axis limits (T_evap) [°C], e.g. --xlim -30 30")
+    ap.add_argument("--ylim", type=float, nargs=2, default=None, metavar=("YMIN", "YMAX"),
+                    help="Override y-axis limits (T_cond) [°C], e.g. --ylim 0 85")
 
     # Measured mode
     ap.add_argument("--use_measured", action="store_true",
@@ -761,14 +809,16 @@ def main():
         plot_combined(df, out_path, color_by=color_col, point_size=args.point_size,
                       continuous_cbar=continuous_cbar, cmap=args.cmap,
                       cbar_label=cbar_label,
-                      show_limits=args.show_limits, refrigerant=args.refrigerant)
+                      show_limits=args.show_limits, refrigerant=args.refrigerant,
+                      xlim=args.xlim, ylim=args.ylim)
 
     elif args.mode == "split":
         out_path = out_dir / f"op_diagram_split_{data_tag}{oil_tag}{color_tag}{limits_tag}_{stamp}.{args.out_format}"
         plot_split(df, out_path, color_by=color_col, point_size=args.point_size,
                    continuous_cbar=continuous_cbar, cmap=args.cmap,
                    cbar_label=cbar_label,
-                   show_limits=args.show_limits, refrigerant=args.refrigerant)
+                   show_limits=args.show_limits, refrigerant=args.refrigerant,
+                   xlim=args.xlim, ylim=args.ylim)
 
     print(f"\nDone. Output: {out_dir}")
 

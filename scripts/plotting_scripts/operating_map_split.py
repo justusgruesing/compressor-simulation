@@ -29,10 +29,7 @@
 # Example:
 #   python scripts/plotting_scripts/operating_map_split.py --rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --xlim (-5, 30) --ylim (25, 70)
 #
-#   python scripts/plotting_scripts/operating_map_split.py ^
-#       --rows_csv results/operating_map/operating_points_rows.csv ^
-#       --split_csv results/operating_map/operating_points_split_template_filled.csv ^
-#       --oil LPG100
+#   python scripts/plotting_scripts/operating_map_split.py --rows_csv results/split_template/operating_points_rows_2026-03-12_112331.csv --split_csv results/split_template/operating_points_split_template_2026-03-12_112331.csv --oil LPG68 --show_limits --xlim -5 30 --ylim 10 85
 #
 #   python scripts/plotting_scripts/operating_map_split.py ^
 #       --rows_csv results/operating_map/operating_points_rows.csv ^
@@ -55,6 +52,101 @@ except OSError:
     pass
 
 
+# =========================================================
+# Operating limits (from Cui, Fig. 3.6 / Table 3.4)
+# =========================================================
+ENVELOPE_UPPER = np.array([
+    [-22.0, 68.0],
+    [ -5.0, 80.0],
+    [ 10.0, 80.0],
+    [ 25.0, 70.0],
+])
+
+P_SUC_MIN_BAR = 2.0
+DELTA_P_MIN_BAR = 3.9
+LIMIT_COLOR = "#D32F2F"
+
+
+def _compute_min_pressure_curve(refrigerant="propane", delta_p_bar=3.9,
+                                 T_evap_range=(-30, 27), n_points=100):
+    from vclibpy.media import RefProp
+    med = RefProp(fluid_name=refrigerant)
+    T_evap_arr = np.linspace(T_evap_range[0], T_evap_range[1], n_points)
+    T_evap_ok, T_cond_arr = [], []
+    for T_evap_C in T_evap_arr:
+        try:
+            T_evap_K = T_evap_C + 273.15
+            st_evap = med.calc_state("TQ", T_evap_K, 1.0)
+            p_evap = float(st_evap.p) / 1e5
+            p_cond_min = p_evap + delta_p_bar
+            st_cond = med.calc_state("PQ", p_cond_min * 1e5, 0.0)
+            T_cond_C = float(st_cond.T) - 273.15
+            T_evap_ok.append(T_evap_C)
+            T_cond_arr.append(T_cond_C)
+        except Exception:
+            pass
+    return np.array(T_evap_ok), np.array(T_cond_arr)
+
+
+def _compute_safety_T_evap(refrigerant="propane", p_min_bar=2.0):
+    from vclibpy.media import RefProp
+    med = RefProp(fluid_name=refrigerant)
+    try:
+        st = med.calc_state("PQ", p_min_bar * 1e5, 1.0)
+        return float(st.T) - 273.15
+    except Exception:
+        return -25.3
+
+
+def build_unified_boundary(refrigerant="propane"):
+    T_evap_safety = _compute_safety_T_evap(refrigerant, P_SUC_MIN_BAR)
+    T_evap_mp, T_cond_mp = _compute_min_pressure_curve(
+        refrigerant=refrigerant, delta_p_bar=DELTA_P_MIN_BAR,
+        T_evap_range=(T_evap_safety, ENVELOPE_UPPER[-1, 0]),
+        n_points=80,
+    )
+    T_evap_right = float(ENVELOPE_UPPER[-1, 0])
+    T_cond_right_mp = float(T_cond_mp[-1]) if len(T_cond_mp) > 0 else 25.0
+    env_T_evap_left = ENVELOPE_UPPER[0, 0]
+    env_T_cond_left = ENVELOPE_UPPER[0, 1]
+    env_T_evap_next = ENVELOPE_UPPER[1, 0] if len(ENVELOPE_UPPER) > 1 else env_T_evap_left
+    env_T_cond_next = ENVELOPE_UPPER[1, 1] if len(ENVELOPE_UPPER) > 1 else env_T_cond_left
+    if T_evap_safety <= env_T_evap_left:
+        T_cond_top_at_safety = env_T_cond_left
+    else:
+        frac = (T_evap_safety - env_T_evap_left) / max(1e-9, env_T_evap_next - env_T_evap_left)
+        T_cond_top_at_safety = env_T_cond_left + frac * (env_T_cond_next - env_T_cond_left)
+    T_cond_bot_at_safety = float(T_cond_mp[0]) if len(T_cond_mp) > 0 else 10.0
+    vertices = []
+    vertices.append([T_evap_safety, T_cond_bot_at_safety])
+    vertices.append([T_evap_safety, T_cond_top_at_safety])
+    for pt in ENVELOPE_UPPER:
+        if pt[0] >= T_evap_safety:
+            vertices.append([pt[0], pt[1]])
+    vertices.append([T_evap_right, T_cond_right_mp])
+    for te, tc in zip(T_evap_mp[::-1], T_cond_mp[::-1]):
+        vertices.append([te, tc])
+    vertices.append(vertices[0])
+    return np.array(vertices), T_evap_safety
+
+
+def draw_operating_limits(ax, refrigerant="propane"):
+    legend_handles = []
+    try:
+        boundary, _ = build_unified_boundary(refrigerant)
+        ax.fill(boundary[:, 0], boundary[:, 1],
+                color=LIMIT_COLOR, alpha=0.06, zorder=0)
+        ax.plot(boundary[:, 0], boundary[:, 1],
+                color=LIMIT_COLOR, linewidth=1.8,
+                linestyle="-", zorder=1, alpha=0.8)
+        legend_handles.append(
+            Line2D([0], [0], color=LIMIT_COLOR, linewidth=1.8,
+                   label="Eingeschr\u00e4nkte Betriebsgrenzen"))
+    except Exception as e:
+        print(f"  [WARN] Could not draw operating limits: {e}")
+    return legend_handles
+
+
 # -------------------------
 # Defaults for generated CSVs
 # -------------------------
@@ -69,6 +161,9 @@ SH_COL_DEFAULT = "T1_SH"
 
 SPLIT_ROLE_COL_DEFAULT = "split_role"
 SPLIT_NOTE_COL_DEFAULT = "split_note"
+
+P1_COL_DEFAULT = "P1_mean"  # suction pressure [bar]
+P2_COL_DEFAULT = "P2_mean"  # discharge pressure [bar]
 
 
 def _ts() -> str:
@@ -166,10 +261,14 @@ def _load_rows_csv(path: Path, args) -> pd.DataFrame:
     df["_plot_oil"] = df[oil_col].map(_norm_oil_name)
 
     # Numeric coercion
-    for col in [args.col_speed, args.col_T_evap, args.col_T_cond, args.col_T_sh]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in [args.col_speed, args.col_T_evap, args.col_T_cond, args.col_T_sh,
+                args.col_P1, args.col_P2]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna(subset=[args.op_id_col, args.col_speed, args.col_T_evap, args.col_T_cond, args.col_T_sh]).copy()
+    df = df.dropna(subset=[args.op_id_col, args.col_speed, args.col_T_evap,
+                           args.col_T_cond, args.col_T_sh,
+                           args.col_P1, args.col_P2]).copy()
     df = df.reset_index(drop=True)
 
     return df
@@ -237,6 +336,8 @@ def main():
     ap.add_argument("--col_T_evap", default=TE_COL_DEFAULT, help="Evaporation temperature column [°C]")
     ap.add_argument("--col_T_cond", default=TC_COL_DEFAULT, help="Condensation temperature column [°C]")
     ap.add_argument("--col_T_sh", default=SH_COL_DEFAULT, help="Superheat column [K or °C-difference]")
+    ap.add_argument("--col_P1", default=P1_COL_DEFAULT, help="Suction pressure column [bar]")
+    ap.add_argument("--col_P2", default=P2_COL_DEFAULT, help="Discharge pressure column [bar]")
 
     ap.add_argument("--split_role_col", default=SPLIT_ROLE_COL_DEFAULT, help="split role column in split CSV")
     ap.add_argument("--split_note_col", default=SPLIT_NOTE_COL_DEFAULT, help="optional split note column in split CSV")
@@ -244,6 +345,10 @@ def main():
     ap.add_argument("--title", default=None, help="Optional plot title override")
     ap.add_argument("--xlim", type=float, nargs=2, default=None, metavar=("XMIN", "XMAX"))
     ap.add_argument("--ylim", type=float, nargs=2, default=None, metavar=("YMIN", "YMAX"))
+    ap.add_argument("--show_limits", action="store_true",
+                    help="Draw operating limit boundaries (Cui Fig. 3.6)")
+    ap.add_argument("--refrigerant", default="propane",
+                    help="Refrigerant for operating limits computation (default: propane)")
 
     ap.add_argument("--cmap", default="viridis", help="Colormap for superheat")
     ap.add_argument("--cmin", type=float, default=None, help="Fixed min for color scale")
@@ -289,6 +394,35 @@ def main():
         raise ValueError("Keine plottbaren Daten nach Filterung gefunden.")
 
     # -------------------------
+    # Compute actual T_evap / T_cond from measured pressures
+    # -------------------------
+    print("  Computing T_sat from measured pressures via RefProp ...")
+    from vclibpy.media import RefProp
+    med = RefProp(fluid_name=args.refrigerant)
+
+    T_evap_actual = []
+    T_cond_actual = []
+    for _, row in df_plot.iterrows():
+        p1 = float(row[args.col_P1]) * 1e5  # bar → Pa
+        p2 = float(row[args.col_P2]) * 1e5
+        try:
+            st_suc = med.calc_state("PQ", p1, 1.0)
+            T_evap_actual.append(float(st_suc.T) - 273.15)
+        except Exception:
+            T_evap_actual.append(float(row[args.col_T_evap]))
+        try:
+            st_dis = med.calc_state("PQ", p2, 0.0)
+            T_cond_actual.append(float(st_dis.T) - 273.15)
+        except Exception:
+            T_cond_actual.append(float(row[args.col_T_cond]))
+
+    df_plot["T_evap_actual"] = T_evap_actual
+    df_plot["T_cond_actual"] = T_cond_actual
+
+    print(f"  T_evap actual: {df_plot['T_evap_actual'].min():.2f} to {df_plot['T_evap_actual'].max():.2f} °C")
+    print(f"  T_cond actual: {df_plot['T_cond_actual'].min():.2f} to {df_plot['T_cond_actual'].max():.2f} °C")
+
+    # -------------------------
     # Plot
     # -------------------------
     fig, ax = plt.subplots()
@@ -304,81 +438,37 @@ def main():
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
     cmap = mpl.colormaps.get_cmap(args.cmap)
 
+    # All points filled, grouped by speed (marker shape)
     for k, speed in enumerate(speed_values):
         marker = markers[k % len(markers)]
-        sub_speed = df_plot[df_plot[args.col_speed] == speed]
+        sub = df_plot[df_plot[args.col_speed] == speed]
 
-        if split_path is None:
-            ax.scatter(
-                sub_speed[args.col_T_evap].to_numpy(),
-                sub_speed[args.col_T_cond].to_numpy(),
-                c=sub_speed[args.col_T_sh].to_numpy(),
-                cmap=cmap,
-                norm=norm,
-                marker=marker,
-                alpha=0.9,
-                edgecolors="none",
-            )
-            continue
+        ax.scatter(
+            sub["T_evap_actual"].to_numpy(),
+            sub["T_cond_actual"].to_numpy(),
+            c=sub[args.col_T_sh].to_numpy(),
+            cmap=cmap,
+            norm=norm,
+            marker=marker,
+            alpha=0.9,
+            edgecolors="none",
+        )
 
-        sub_train = sub_speed[sub_speed["_split_role_norm"] == "train"]
-        if not sub_train.empty:
-            ax.scatter(
-                sub_train[args.col_T_evap].to_numpy(),
-                sub_train[args.col_T_cond].to_numpy(),
-                c=sub_train[args.col_T_sh].to_numpy(),
-                cmap=cmap,
-                norm=norm,
-                marker=marker,
-                alpha=0.9,
-                edgecolors="none",
-            )
+    ax.set_xlabel("Verdampfungstemperatur $T_{Verd}$ in °C")
+    ax.set_ylabel("Kondensationstemperatur $T_{Kond}$ in °C")
 
-        sub_val = sub_speed[sub_speed["_split_role_norm"] == "validation"]
-        if not sub_val.empty:
-            edge_cols = cmap(norm(sub_val[args.col_T_sh].to_numpy()))
-            ax.scatter(
-                sub_val[args.col_T_evap].to_numpy(),
-                sub_val[args.col_T_cond].to_numpy(),
-                facecolors="none",
-                edgecolors=edge_cols,
-                marker=marker,
-                alpha=0.95,
-                linewidths=1.2,
-            )
-
-        sub_unassigned = sub_speed[sub_speed["_split_role_norm"] == "unassigned"]
-        if not sub_unassigned.empty:
-            ax.scatter(
-                sub_unassigned[args.col_T_evap].to_numpy(),
-                sub_unassigned[args.col_T_cond].to_numpy(),
-                facecolors="none",
-                edgecolors="0.5",
-                marker=marker,
-                alpha=0.95,
-                linewidths=1.0,
-            )
-
-    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ [°C]")
-    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ [°C]")
+    # Operating limits
+    limit_handles = []
+    if args.show_limits:
+        limit_handles = draw_operating_limits(ax, refrigerant=args.refrigerant)
 
     if args.title is None:
-        if split_path is None:
-            title = f"Betriebspunkte: {oil_choice}"
+        n_total = len(df_plot)
+        if oil_choice == "all":
+            oil_txt = "alle Öle"
         else:
-            n_train = int((df_plot["_split_role_norm"] == "train").sum())
-            n_val = int((df_plot["_split_role_norm"] == "validation").sum())
-            n_unassigned = int((df_plot["_split_role_norm"] == "unassigned").sum())
-
-            if oil_choice == "all":
-                oil_txt = "shared operating points"
-            else:
-                oil_txt = oil_choice
-
-            title = (
-                f"Betriebspunkte: {oil_txt} | "
-                f"Train={n_train}, Val={n_val}, Unassigned={n_unassigned}"
-            )
+            oil_txt = oil_choice
+        title = f"Betriebspunkte: {oil_txt} (n={n_total})"
     else:
         title = args.title
 
@@ -389,7 +479,7 @@ def main():
     if args.ylim is not None:
         ax.set_ylim(float(args.ylim[0]), float(args.ylim[1]))
 
-    # Legend 1: speed / marker shape
+    # Legend: speed / marker shape
     speed_handles = [
         Line2D(
             [0], [0],
@@ -402,52 +492,19 @@ def main():
         )
         for k, speed in enumerate(speed_values)
     ]
-    leg_speed = ax.legend(handles=speed_handles, title="Betriebspunktgruppe", loc="upper left", frameon=True)
-    ax.add_artist(leg_speed)
-
-    # Legend 2: split role
-    if split_path is not None:
-        status_handles = [
-            Line2D(
-                [0], [0],
-                marker="o",
-                linestyle="None",
-                color="black",
-                markerfacecolor="0.5",
-                markersize=7,
-                label="Trainingspunkte",
-            ),
-            Line2D(
-                [0], [0],
-                marker="o",
-                linestyle="None",
-                color="black",
-                markerfacecolor="none",
-                markersize=7,
-                label="Validierungspunkte",
-            ),
-        ]
-
-        if (df_plot["_split_role_norm"] == "unassigned").any():
-            status_handles.append(
-                Line2D(
-                    [0], [0],
-                    marker="o",
-                    linestyle="None",
-                    color="0.5",
-                    markerfacecolor="none",
-                    markersize=7,
-                    label="Nicht zugeordnet",
-                )
-            )
-
-        ax.legend(handles=status_handles, title="Split", loc="lower right", frameon=True)
+    ax.legend(handles=speed_handles, title="Betriebspunktgruppe", loc="upper left", frameon=True)
 
     # Colorbar
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, pad=0.02)
-    cbar.set_label("Überhitzung $T_{1,SH}$ [K]")
+    cbar.set_label("Überhitzung $T_{1,SH}$ in K")
+
+    # Operating limits legend at the bottom
+    if limit_handles:
+        fig.legend(handles=limit_handles, loc="lower center",
+                   bbox_to_anchor=(0.5, -0.04), ncol=len(limit_handles),
+                   fontsize=9, frameon=True)
 
     # Save outputs
     stamp = _ts()

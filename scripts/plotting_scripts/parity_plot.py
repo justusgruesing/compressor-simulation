@@ -126,19 +126,22 @@ def _auto_title(df: pd.DataFrame, metric_label: str) -> str:
         elif len(vals) > 1:
             val_oil = "beide"
 
-    # Build title
-    title_main = f"Parity Plot: {target_disp}"
+    # Build title (two lines)
+    line1 = f"Parity Plot: {target_disp}"
     if model:
-        title_main += f" {model}"
+        line1 += f" {model}"
 
+    line2 = ""
     if params_oil and val_oil:
-        title_main += f" | Kalibrierung: {params_oil} \u2192 Validierung: {val_oil}"
+        line2 = f"Kalibrierung: {params_oil} \u2192 Validierung: {val_oil}"
     elif params_oil:
-        title_main += f" | Kalibrierung: {params_oil}"
+        line2 = f"Kalibrierung: {params_oil}"
     elif val_oil:
-        title_main += f" | Validierung: {val_oil}"
+        line2 = f"Validierung: {val_oil}"
 
-    return title_main
+    if line2:
+        return f"{line1}\n{line2}"
+    return line1
 
 
 # =========================================================

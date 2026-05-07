@@ -74,31 +74,83 @@ def _detect_split_role(df: pd.DataFrame):
 
 
 def _model_display_name(model_str) -> str:
+    """Map model strings to thesis display names."""
     s = str(model_str).strip().lower()
     mapping = {
-        "original": "Original", "orig": "Original",
-        "modified": "Modified", "mod": "Modified",
-        "oil_path": "Oil Path", "oilpath": "Oil Path",
+        "original": "Basismodell", "orig": "Basismodell",
+        "modified": "Modellausbaustufe I", "mod": "Modellausbaustufe I",
+        "oil_path": "Modellausbaustufe II", "oilpath": "Modellausbaustufe II",
     }
     return mapping.get(s, str(model_str).capitalize())
 
 
-def _auto_subtitle(df: pd.DataFrame) -> str:
-    """Build a one-line subtitle from metadata columns."""
-    parts = []
+def _oil_display_name(oil_str) -> str:
+    """Map oil strings to thesis display names."""
+    s = str(oil_str).strip().lower().replace(" ", "")
+    mapping = {
+        "lpg68": "PAG68", "lpg 68": "PAG68",
+        "lpg100": "PAG100", "lpg 100": "PAG100",
+        "all": "beide",
+    }
+    return mapping.get(s, str(oil_str))
+
+
+TARGET_DISPLAY = {
+    "m_dot": "Massenstromfehler",
+    "P_el": "Leistungsfehler",
+    "T_dis": "Austrittstemperaturfehler",
+}
+
+
+def _auto_title(df: pd.DataFrame, target_key: str) -> str:
+    """
+    Generate a two-line title in thesis format:
+    Line 1: <Zielgröße> <Modell>
+    Line 2: Kalibrierung: <params_oil> → Validierung: <val_oil>
+    """
+    target_disp = TARGET_DISPLAY.get(target_key, target_key)
+
+    model = ""
     if "model" in df.columns:
         vals = df["model"].dropna().unique()
         if len(vals) == 1:
-            parts.append(_model_display_name(vals[0]))
+            model = _model_display_name(vals[0])
 
-    if "params_oil" in df.columns and "oil" in df.columns:
-        params_vals = df["params_oil"].dropna().unique()
-        oil_vals = df["oil"].dropna().unique()
-        if len(params_vals) == 1 and len(oil_vals) == 1:
-            parts.append(f"Params: {params_vals[0]} \u2192 Data: {oil_vals[0]}")
-        elif len(params_vals) == 1 and len(oil_vals) > 1:
-            parts.append(f"Params: {params_vals[0]} \u2192 Data: alle")
-    return " | ".join(parts)
+    params_oil = ""
+    if "params_oil" in df.columns:
+        vals = df["params_oil"].dropna().unique()
+        if len(vals) == 1:
+            params_oil = _oil_display_name(str(vals[0]))
+
+    val_oil = ""
+    if "oil" in df.columns:
+        vals = df["oil"].dropna().unique()
+        if len(vals) == 1:
+            val_oil = _oil_display_name(str(vals[0]))
+        elif len(vals) > 1:
+            val_oil = "beide"
+    elif "oil_norm" in df.columns:
+        vals = df["oil_norm"].dropna().unique()
+        if len(vals) == 1:
+            val_oil = _oil_display_name(str(vals[0]))
+        elif len(vals) > 1:
+            val_oil = "beide"
+
+    line1 = target_disp
+    if model:
+        line1 += f" {model}"
+
+    line2 = ""
+    if params_oil and val_oil:
+        line2 = f"Kalibrierung: {params_oil} \u2192 Validierung: {val_oil}"
+    elif params_oil:
+        line2 = f"Kalibrierung: {params_oil}"
+    elif val_oil:
+        line2 = f"Validierung: {val_oil}"
+
+    if line2:
+        return f"{line1}\n{line2}"
+    return line1
 
 
 # =========================================================
@@ -178,6 +230,11 @@ X_AXIS_CONFIG = {
     "pressure_ratio": {
         "col": "pressure_ratio",
         "label": "Druckverh\u00e4ltnis $p_{aus}/p_{ein}$",
+        "computed": False,
+    },
+    "P_el": {
+        "col": "P_meas_W",
+        "label": "Gemessene elektrische Leistung $P_{el}$ in W",
         "computed": False,
     },
 }
@@ -268,6 +325,42 @@ def _resolve_color(df: pd.DataFrame, color_by: str, cmap_override, T_cond_cache)
 
 
 # =========================================================
+# Categorical color modes (discrete groups)
+# =========================================================
+CATEGORICAL_MODES = {"oil"}
+
+CATEGORICAL_COLORS = {
+    "oil": {
+        "groups": {
+            "PAG68": "#EC635C",
+            "PAG100": "#4B81C4",
+        },
+    },
+}
+
+
+def _resolve_categorical_groups(df, color_by):
+    """Return (group_labels, group_config) or (None, None) if not categorical."""
+    if color_by not in CATEGORICAL_MODES:
+        return None, None
+
+    if color_by == "oil":
+        oil_col = None
+        for c in ("oil_norm", "oil"):
+            if c in df.columns:
+                oil_col = c
+                break
+        if oil_col is None:
+            print("  [WARN] No oil column found for oil coloring.")
+            return None, None
+        raw = df[oil_col].fillna("").astype(str)
+        labels = raw.apply(lambda s: "PAG68" if "68" in s else ("PAG100" if "100" in s else s))
+        return labels.to_numpy(), CATEGORICAL_COLORS["oil"]
+
+    return None, None
+
+
+# =========================================================
 # Core plot function
 # =========================================================
 def plot_error_curve(
@@ -288,11 +381,12 @@ def plot_error_curve(
     cmax=None,
     point_size=None,
     err_unit: str = "%",
+    cat_labels=None,
+    cat_config=None,
 ):
     """
-    Generic error vs. x scatter with tolerance band and statistics box.
-
-    err_unit: '%' (e.g. relative errors as percent) or 'K' (e.g. T_dis diff).
+    Generic error vs. x scatter with tolerance band.
+    Supports continuous coloring, categorical coloring (oil), and train/val split.
     """
     arrays = [x, y_err]
     if color_values is not None:
@@ -303,20 +397,13 @@ def plot_error_curve(
     y = y_err[m]
     c = color_values[m] if color_values is not None else None
     r = roles[m] if roles is not None else None
+    cl = cat_labels[m] if cat_labels is not None else None
 
     if len(x) == 0:
         print(f"  [SKIP] {out_path.name}: no valid data.")
         return
 
     outside = np.abs(y) > band_abs
-    n_total = int(len(x))
-    n_out = int(np.sum(outside))
-    frac_out = float(n_out / n_total) if n_total else np.nan
-
-    mae = float(np.mean(np.abs(y)))
-    rmse = float(np.sqrt(np.mean(y ** 2)))
-    err_min = float(np.min(y))
-    err_max = float(np.max(y))
 
     # Plot ranges
     x_pad = 0.03 * (np.max(x) - np.min(x) + 1e-9)
@@ -334,90 +421,105 @@ def plot_error_curve(
     ax.axhline(+band_abs, color="0.5", linestyle="--", linewidth=1.0,
                zorder=2, label=f"\u00b1{band_label}")
     ax.axhline(-band_abs, color="0.5", linestyle="--", linewidth=1.0, zorder=2)
-
-    # Shaded tolerance area
     ax.axhspan(-band_abs, +band_abs, color="0.5", alpha=0.10, zorder=1)
 
-    # Determine color usage
-    has_split = roles is not None
-    has_color = (c is not None and np.any(np.isfinite(c)))
+    # === Categorical coloring (e.g. oil) ===
+    if cl is not None and cat_config is not None:
+        groups = cat_config["groups"]
+        for group_name, color in groups.items():
+            mask_group = (cl == group_name)
+            if np.any(mask_group):
+                ax.scatter(
+                    x[mask_group], y[mask_group],
+                    s=point_size, alpha=0.85, marker="o",
+                    color=color, edgecolors="none",
+                    zorder=3, label=group_name,
+                )
 
-    if has_color:
-        vmin = float(np.nanmin(c)) if cmin is None else cmin
-        vmax = float(np.nanmax(c)) if cmax is None else cmax
-        if vmin == vmax:
-            vmin -= 0.5
-            vmax += 0.5
+    # === Continuous coloring ===
     else:
-        vmin = vmax = None
+        has_split = r is not None
+        has_color = (c is not None and np.any(np.isfinite(c)))
 
-    if has_split:
-        is_train = (r == "train")
-        is_val = ~is_train
-    else:
-        is_train = np.zeros(len(x), dtype=bool)
-        is_val = np.ones(len(x), dtype=bool)
+        if has_color:
+            vmin = float(np.nanmin(c)) if cmin is None else cmin
+            vmax = float(np.nanmax(c)) if cmax is None else cmax
+            if vmin == vmax:
+                vmin -= 0.5
+                vmax += 0.5
+        else:
+            vmin = vmax = None
 
-    sc_ref = None
+        if has_split:
+            is_train = (r == "train")
+            is_val = ~is_train
+        else:
+            is_train = np.zeros(len(x), dtype=bool)
+            is_val = np.ones(len(x), dtype=bool)
 
-    if has_color:
-        cmap_obj = plt.get_cmap(cmap)
-        norm = plt.Normalize(vmin=vmin, vmax=vmax)
+        n_train = int(is_train.sum())
+        n_val = int(is_val.sum())
+        train_only = (n_train > 0 and n_val == 0)
 
-        # Validation (filled circles)
-        if np.any(is_val):
-            sc_ref = ax.scatter(
-                x[is_val], y[is_val],
-                c=c[is_val], cmap=cmap, vmin=vmin, vmax=vmax,
-                s=point_size, alpha=0.90, marker="o", edgecolors="none",
-                zorder=3, label="Validation",
-            )
+        sc_ref = None
 
-        # Train (hollow circles, edge color from cmap)
-        if np.any(is_train):
-            edge_colors = cmap_obj(norm(c[is_train]))
-            ax.scatter(
-                x[is_train], y[is_train],
-                s=point_size, alpha=0.85, marker="o",
-                facecolors="none", edgecolors=edge_colors, linewidths=1.2,
-                zorder=3, label="Training",
-            )
+        if has_color:
+            cmap_obj = plt.get_cmap(cmap)
+            norm = plt.Normalize(vmin=vmin, vmax=vmax)
 
-        if sc_ref is not None:
-            cbar = fig.colorbar(sc_ref, ax=ax, pad=0.02)
-            cbar.set_label(color_label)
-    else:
-        # Plain colors
-        if np.any(is_val):
-            ax.scatter(
-                x[is_val], y[is_val],
-                s=point_size, alpha=0.85, marker="o",
-                color="#4B81C4", edgecolors="none",
-                zorder=3, label="Validation",
-            )
-        if np.any(is_train):
-            ax.scatter(
-                x[is_train], y[is_train],
-                s=point_size, alpha=0.80, marker="o",
-                facecolors="none", edgecolors="#EC635C", linewidths=1.2,
-                zorder=3, label="Training",
-            )
+            if train_only:
+                sc_ref = ax.scatter(
+                    x, y, c=c, cmap=cmap, vmin=vmin, vmax=vmax,
+                    s=point_size, alpha=0.90, marker="o", edgecolors="none",
+                    zorder=3,
+                )
+            else:
+                if np.any(is_val):
+                    sc_ref = ax.scatter(
+                        x[is_val], y[is_val],
+                        c=c[is_val], cmap=cmap, vmin=vmin, vmax=vmax,
+                        s=point_size, alpha=0.90, marker="o", edgecolors="none",
+                        zorder=3, label="Validierung",
+                    )
+                if np.any(is_train):
+                    edge_colors = cmap_obj(norm(c[is_train]))
+                    ax.scatter(
+                        x[is_train], y[is_train],
+                        s=point_size, alpha=0.85, marker="o",
+                        facecolors="none", edgecolors=edge_colors, linewidths=1.2,
+                        zorder=3, label="Training",
+                    )
 
-    # Statistics text box
-    info_txt = (
-        f"MAE: {mae:.2f} {err_unit}\n"
-        f"RMSE: {rmse:.2f} {err_unit}\n"
-        f"Spanne: {err_min:.2f} ... {err_max:.2f} {err_unit}\n"
-        f"au\u00dferhalb \u00b1{band_label}: {n_out} / {n_total} ({frac_out*100:.1f}%)"
-    )
-    ax.text(
-        0.02, 0.98, info_txt,
-        transform=ax.transAxes,
-        ha="left", va="top",
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
-                  alpha=0.85, edgecolor="0.7"),
-    )
+            # Colorbar
+            if sc_ref is not None:
+                cbar = fig.colorbar(sc_ref, ax=ax, pad=0.02)
+                cbar.set_label(color_label)
+            else:
+                sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+                sm.set_array([])
+                cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+                cbar.set_label(color_label)
+        else:
+            if train_only:
+                ax.scatter(
+                    x, y, s=point_size, alpha=0.85, marker="o",
+                    color="#4B81C4", edgecolors="none", zorder=3,
+                )
+            else:
+                if np.any(is_val):
+                    ax.scatter(
+                        x[is_val], y[is_val],
+                        s=point_size, alpha=0.85, marker="o",
+                        color="#4B81C4", edgecolors="none",
+                        zorder=3, label="Validierung",
+                    )
+                if np.any(is_train):
+                    ax.scatter(
+                        x[is_train], y[is_train],
+                        s=point_size, alpha=0.80, marker="o",
+                        facecolors="none", edgecolors="#EC635C", linewidths=1.2,
+                        zorder=3, label="Training",
+                    )
 
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
@@ -454,7 +556,7 @@ def main():
                     help="Tolerance band for T_dis error in K (default 3)")
 
     # X-axis selection per metric
-    x_choices = ["T_evap", "T_cond", "speed", "superheat", "pressure_ratio"]
+    x_choices = ["T_evap", "T_cond", "speed", "superheat", "pressure_ratio", "P_el"]
     ap.add_argument("--x_m_dot", choices=x_choices, default="T_evap",
                     help="X-axis for m_dot error plot (default: T_evap, like Giuffrida)")
     ap.add_argument("--x_P_el", choices=x_choices, default="pressure_ratio",
@@ -465,9 +567,10 @@ def main():
     # Color
     ap.add_argument(
         "--color_by",
-        choices=["superheat", "pressure_ratio", "T_evap", "T_cond", "speed", "none"],
+        choices=["superheat", "pressure_ratio", "T_evap", "T_cond", "speed", "oil", "none"],
         default="none",
-        help="Color points by additional variable",
+        help="Color points by additional variable. "
+             "'oil' uses categorical colors for PAG68/PAG100.",
     )
     ap.add_argument("--cmin", type=float, default=None)
     ap.add_argument("--cmax", type=float, default=None)
@@ -498,15 +601,20 @@ def main():
     # T_cond cache (computed lazily, at most once)
     T_cond_cache = [None]
 
-    # Resolve color
-    color_vals, color_label, cmap = _resolve_color(
-        df, args.color_by, args.cmap, T_cond_cache,
-    )
-    if color_vals is not None:
-        print(f"  Coloring by: {args.color_by} ({color_label})")
+    # Resolve color — categorical or continuous
+    cat_labels, cat_config = _resolve_categorical_groups(df, args.color_by)
+    is_categorical = cat_labels is not None
 
-    # Subtitle
-    subtitle = _auto_subtitle(df)
+    if is_categorical:
+        color_vals, color_label, cmap = None, "", "viridis"
+        unique_groups = np.unique(cat_labels)
+        print(f"  Coloring by: {args.color_by} (categorical: {', '.join(unique_groups)})")
+    else:
+        color_vals, color_label, cmap = _resolve_color(
+            df, args.color_by, args.cmap, T_cond_cache,
+        )
+        if color_vals is not None:
+            print(f"  Coloring by: {args.color_by} ({color_label})")
 
     # Build per-metric configurations
     plot_specs = []
@@ -516,9 +624,7 @@ def main():
         x_arr, x_lbl = _resolve_x_axis(df, args.x_m_dot, T_cond_cache)
         if x_arr is not None:
             y = df["e_m_rel"].to_numpy(dtype=float) * 100.0  # to percent
-            title = "Massenstromfehler"
-            if subtitle:
-                title += f"\n{subtitle}"
+            title = _auto_title(df, "m_dot")
             plot_specs.append({
                 "x": x_arr,
                 "y": y,
@@ -538,9 +644,7 @@ def main():
         x_arr, x_lbl = _resolve_x_axis(df, args.x_P_el, T_cond_cache)
         if x_arr is not None:
             y = df["e_P_rel"].to_numpy(dtype=float) * 100.0
-            title = "Leistungsfehler"
-            if subtitle:
-                title += f"\n{subtitle}"
+            title = _auto_title(df, "P_el")
             plot_specs.append({
                 "x": x_arr,
                 "y": y,
@@ -560,9 +664,7 @@ def main():
         x_arr, x_lbl = _resolve_x_axis(df, args.x_T_dis, T_cond_cache)
         if x_arr is not None:
             y = df["e_T_dis_K"].to_numpy(dtype=float)  # already in K
-            title = "Austrittstemperaturfehler"
-            if subtitle:
-                title += f"\n{subtitle}"
+            title = _auto_title(df, "T_dis")
             plot_specs.append({
                 "x": x_arr,
                 "y": y,
@@ -591,7 +693,7 @@ def main():
             y_label=spec["y_label"],
             band_label=spec["band_label"],
             out_path=spec["out_path"],
-            roles=roles,
+            roles=roles if not is_categorical else None,
             color_values=color_vals,
             color_label=color_label,
             cmap=cmap,
@@ -599,6 +701,8 @@ def main():
             cmax=args.cmax,
             point_size=args.point_size,
             err_unit=spec["err_unit"],
+            cat_labels=cat_labels,
+            cat_config=cat_config,
         )
 
     print(f"\nDone. Output dir: {out_dir}")

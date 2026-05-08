@@ -23,7 +23,7 @@
 #
 # Examples:
 #   # Default Giuffrida-style:
-#   python scripts/plotting_scripts/error_analysis_curves.py --pred_csv results/final_results/Modified_LPG68/Validation/validation_detail_params_lpg68_val_lpg68_modified_2026-04-02_104250.csv
+#   python scripts/plotting_scripts/error_analysis_curves.py --pred_csv results/validation/oil_path/detail/validation_detail_params_all_val_all_oil_path_validation_only_2026-05-07_112413.csv --x_m_dot pressure_ratio --color_by superheat
 #
 #   # Override x-axes:
 #   python scripts/plotting_scripts/error_analysis_curves.py \

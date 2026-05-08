@@ -26,7 +26,7 @@
 #       --oil LPG68 --T_evap 0 --T_cond 50
 #
 #   # Multiple operating points (vary T_evap):
-#   python scripts/plotting_scripts/oil_path_wKM.py --params_csv results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv --oil LPG68 --T_evap -5 0 10 20 --T_cond 50
+#   python scripts/plotting_scripts/oil_path_wKM.py --params_csv results/final_results/Oil_Path_LPG100/Fitting/fitted_params_lpg100_oil_path_ga_2026-04-18_041610.csv --oil PAG100 --T_evap -5 0 10 20 --T_cond 50 --out_format svg
 #
 #   # Vary T_cond instead:
 #   python scripts/plotting_scripts/oil_path_wKM.py --params_csv results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv --oil LPG68 --T_evap 10 --T_cond 30 40 50 60
@@ -63,7 +63,7 @@ except ImportError:
         Molinaroli_2017_Compressor_OilPath = None
 
 plt.style.use("ebc.paper.mplstyle")
-
+plt.rcParams["svg.fonttype"] = "none"
 
 # =========================================================
 # Constants
@@ -90,9 +90,9 @@ DEFAULT_PARAMS = {
 STATE_POINTS = [
     {"key": "sump",     "label": "Ölsumpf",           "short": "Sumpf"},
     {"key": "throttle", "label": "Nach\nDrosselung",   "short": "Drossel"},
-    {"key": "after_ht", "label": "Nach\nSaug-WT",      "short": "Saug-WT"},
+    {"key": "after_ht", "label": "Nach\nSaug-WÜ",      "short": "Saug-WÜ"},
     {"key": "mix",      "label": "Nach\nMischung",     "short": "Mischung"},
-    {"key": "dis",      "label": "Bei\n$T_{dis}$",     "short": "T_dis"},
+    {"key": "dis",      "label": "Nach\nDruck-WÜ",      "short": "T_dis"},
     {"key": "sump_ret", "label": "Ölsumpf\n(Rückkehr)","short": "Sumpf*"},
 ]
 
@@ -123,10 +123,18 @@ def map_refrigerant(name):
     return "propane" if s in {"PROPANE", "R290", "PROPAN"} else str(name).strip()
 
 def map_oil(name):
+    """Return the internal lubricant name expected by the simulation."""
     s = str(name).strip().lower().replace(" ", "")
-    if s == "lpg68": return "LPG 68"
-    if s == "lpg100": return "LPG 100"
+    if s in ("lpg68", "pag68"): return "LPG 68"
+    if s in ("lpg100", "pag100"): return "LPG 100"
     raise ValueError(f"Unsupported oil: {name}")
+
+def display_oil(name):
+    """Return the display name for plots and titles."""
+    s = str(name).strip().lower().replace(" ", "")
+    if s in ("lpg68", "pag68"): return "PAG 68"
+    if s in ("lpg100", "pag100"): return "PAG 100"
+    return str(name)
 
 
 def load_params_csv(path):
@@ -291,8 +299,8 @@ def plot_oil_path_wKM(
         color = EBC_COLORS[i % len(EBC_COLORS)]
 
         # Build label from operating conditions
-        label = (f"$T_{{evap}}$={res['T_evap_C']:.0f} °C, "
-                 f"$T_{{cond}}$={res['T_cond_C']:.0f} °C")
+        label = (f"$T_{{\\mathrm{{verd}}}}$={res['T_evap_C']:.0f} °C, "
+                 f"$T_{{\\mathrm{{kond}}}}$={res['T_cond_C']:.0f} °C")
         if len(set(r["N_rpm"] for r in results)) > 1:
             label += f", N={res['N_rpm']:.0f}"
         if len(set(r["SH_K"] for r in results)) > 1:
@@ -310,26 +318,63 @@ def plot_oil_path_wKM(
                 markersize=9, markeredgecolor="white", markeredgewidth=1.2,
                 label=label, zorder=3)
 
-        # Annotate w_KM values next to each point
-        for j, (xp, yp) in enumerate(zip(x_pos, y_vals)):
+    # --- Annotate w_KM values with collision-aware placement ---
+    # Collect all y-values per state point for smart offset calculation
+    all_y_per_state = {}  # {state_idx: [(line_idx, y_val, color), ...]}
+    all_y_global = []
+    for i, res in enumerate(results):
+        color = EBC_COLORS[i % len(EBC_COLORS)]
+        for j, sp in enumerate(STATE_POINTS):
+            val = res.get(sp["key"])
+            yp = float(val) * 100 if val is not None else np.nan
             if np.isfinite(yp):
-                # Alternate offset direction to avoid overlap between lines
-                dy_offset = 12 if (i % 2 == 0) else -16
-                ax.annotate(
-                    f"{yp:.1f}%",
-                    (xp, yp),
-                    textcoords="offset points",
-                    xytext=(0, dy_offset),
-                    fontsize=8, color=color, ha="center",
-                    fontweight="bold",
-                )
+                all_y_per_state.setdefault(j, []).append((i, yp, color))
+                all_y_global.append(yp)
+
+    MIN_GAP_PT = 18  # minimum gap between labels in points
+
+    for j, entries in all_y_per_state.items():
+        # Sort by y-value (ascending)
+        entries_sorted = sorted(entries, key=lambda e: e[1])
+
+        # Assign offsets: bottom half gets labels below, top half above
+        # Horizontal offset alternates within each side for spread
+        n = len(entries_sorted)
+        offsets = []
+        below_count = 0
+        above_count = 0
+        for rank, (line_idx, yp, color) in enumerate(entries_sorted):
+            if rank < n / 2:
+                base_dy = -MIN_GAP_PT
+                extra_dy = -MIN_GAP_PT * (n // 2 - 1 - rank) * 0.4
+                dx = -8 if (below_count % 2 == 0) else 8
+                below_count += 1
+            else:
+                base_dy = MIN_GAP_PT
+                extra_dy = MIN_GAP_PT * (rank - n // 2) * 0.4
+                dx = 8 if (above_count % 2 == 0) else -8
+                above_count += 1
+
+            dy = base_dy + extra_dy
+            ha = "right" if dx < 0 else "left" if dx > 0 else "center"
+            offsets.append((line_idx, yp, color, dx, dy, ha))
+
+        for line_idx, yp, color, dx, dy, ha in offsets:
+            ax.annotate(
+                f"{yp:.1f}%",
+                (j, yp),
+                textcoords="offset points",
+                xytext=(dx, dy),
+                fontsize=8, color=color, ha=ha,
+                fontweight="bold",
+            )
 
     # Axis setup
     ax.set_xticks(x_pos)
     ax.set_xticklabels([sp["label"] for sp in STATE_POINTS],
                        fontsize=10, ha="center")
 
-    ax.set_ylabel("Gelöster Kältemittelmassenanteil $w_{\\mathrm{KM}}$ [%]")
+    ax.set_ylabel("Gelöster Kältemittelmassenanteil $w_{\\mathrm{KM}}$ in %")
     ax.set_xlabel("Zustandspunkt im Schmierstoffpfad")
 
     # Add pressure regions as background shading
@@ -338,17 +383,20 @@ def plot_oil_path_wKM(
     ax.axvspan(2.5, 5.5, alpha=0.06, color="#4B81C4", zorder=0)
 
     # Pressure labels at top of axes (use axes transform for y, data for x)
-    ax.text(0.0, 0.97, "$p_{dis}$", ha="center", va="top",
+    ax.text(0.0, 0.97, "$p_{\\mathrm{aus}}$", ha="center", va="top",
             fontsize=9, color="#4B81C4", fontstyle="italic",
             transform=ax.get_xaxis_transform())
-    ax.text(1.5, 0.97, "$p_{suc}$", ha="center", va="top",
+    ax.text(1.5, 0.97, "$p_{\\mathrm{ein}}$", ha="center", va="top",
             fontsize=9, color="#EC635C", fontstyle="italic",
             transform=ax.get_xaxis_transform())
-    ax.text(4.0, 0.97, "$p_{dis}$", ha="center", va="top",
+    ax.text(4.0, 0.97, "$p_{\\mathrm{aus}}$", ha="center", va="top",
             fontsize=9, color="#4B81C4", fontstyle="italic",
             transform=ax.get_xaxis_transform())
 
     ax.set_xlim(-0.5, n_states - 0.5)
+    if all_y_global:
+        y_margin = 1.0  # 1 percentage point margin
+        ax.set_ylim(min(all_y_global) - y_margin, max(all_y_global) + y_margin)
     ax.grid(True, axis="y", linewidth=0.5, alpha=0.3)
 
     # Legend
@@ -356,7 +404,7 @@ def plot_oil_path_wKM(
 
     # Title
     ax.set_title(
-        f"Gelöster Kältemittelanteil entlang des Schmierstoffpfads — {oil_name}",
+        f"Gelöster Kältemittelanteil entlang des Schmierstoffpfads — {display_oil(oil_name)}",
         fontsize=13, pad=15,
     )
 
@@ -369,7 +417,7 @@ def plot_oil_path_wKM(
 
 def print_table(results):
     """Print a summary table of w_KM values."""
-    header = f"{'T_evap':>6} {'T_cond':>6}"
+    header = f"{'T_verd':>6} {'T_kond':>6}"
     for sp in STATE_POINTS:
         header += f" {sp['short']:>10}"
     print(f"\n  {header}")
@@ -394,7 +442,7 @@ def main():
         description="Plot dissolved refrigerant fraction along the oil path."
     )
     ap.add_argument("--params_csv", required=True, type=Path)
-    ap.add_argument("--oil", required=True, help="LPG68 | LPG100")
+    ap.add_argument("--oil", required=True, help="PAG68 | PAG100 (or LPG68 | LPG100)")
     ap.add_argument("--refrigerant", default="auto")
 
     # Operating points — multiple values create multiple lines

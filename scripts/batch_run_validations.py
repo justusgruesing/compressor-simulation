@@ -27,9 +27,9 @@
 #
 # Examples:
 #   # Default (train_only + validation_only, sequential):
-#   python scripts/batch_run_validations.py --filter_model modified
+#   python scripts/batch_run_validations.py --filter_model oil_path
 #
-#   python scripts/batch_run_validations.py --include_all_mode --filter_params_oil all --filter_val_oil all --filter_model modified
+#   python scripts/batch_run_validations.py --include_all_mode --filter_params_oil all --filter_val_oil all --filter_model oil_path
 #
 #   # Including 'all' selection mode and 4 parallel workers:
 #   python scripts/batch_run_validations.py --include_all_mode --n_workers 4
@@ -68,9 +68,9 @@ PARAMS = {
         "all":    Path("results/final_results/Modified_All/Fitting/fitted_params_all_modified_ga_2026-03-26_110247.csv"),
     },
     "oil_path": {
-        "LPG68":  Path("results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-06_042321.csv"),
-        "LPG100": Path("results/final_results/Oil_Path_LPG100/Fitting/fitted_params_lpg100_oil_path_ga_2026-04-06_042321.csv"),
-        "all":    Path("results/final_results/Oil_Path_All/Fitting/fitted_params_all_oil_path_ga_2026-04-06_042321.csv"),
+        "LPG68":  Path("results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv"),
+        "LPG100": Path("results/final_results/Oil_Path_LPG100/Fitting/fitted_params_lpg100_oil_path_ga_2026-04-18_041610.csv"),
+        "all":    Path("results/final_results/Oil_Path_All/Fitting/fitted_params_all_oil_path_ga_2026-05-06_224812.csv"),
     },
 }
 

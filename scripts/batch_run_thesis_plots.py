@@ -25,7 +25,7 @@
 #   python scripts/batch_run_thesis_plots.py --phase A
 #
 #   # Only for one model:
-#   python scripts/batch_run_thesis_plots.py --filter_model modified
+#   python scripts/batch_run_thesis_plots.py --filter_model oil_path
 #
 #   # Dry run:
 #   python scripts/batch_run_thesis_plots.py --dry_run

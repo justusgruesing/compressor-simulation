@@ -32,6 +32,24 @@
 #       --params_csv results/ga_fit/fitted_params_lpg68_modified_ga_2026-03-19.csv \
 #       --vary superheat --SH_K_min 5 --SH_K_max 35 \
 #       --T_evap 10 --T_cond 50 --N_rpm 3600 --plot_mode lines
+#
+#   results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv
+#   # Sweep T_evap, plot against pressure ratio:
+#   python scripts/plotting_scripts/loss_curves.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --vary T_cond --T_cond_min 25 --T_cond_max 65 --T_evap 0 --N_rpm 4200 --SH_K 10 --x_axis pressure_ratio
+#
+#   # Sweep T_evap, plot against pressure ratio:
+#   python scripts/plotting_scripts/loss_curves.py \
+#       --params_csv results/ga_fit/fitted_params_lpg68_modified_ga_2026-03-19.csv \
+#       --vary T_evap --T_evap_min -5 --T_evap_max 25 \
+#       --T_cond 30 40 50 60 --N_rpm 3600 --SH_K 10 \
+#       --x_axis pressure_ratio
+#
+#   # Reversed stack (viscosity at bottom) + normalized:
+#   python scripts/plotting_scripts/loss_curves.py \
+#       --params_csv results/ga_fit/fitted_params_lpg68_modified_ga_2026-03-19.csv \
+#       --vary T_evap --T_evap_min -5 --T_evap_max 25 \
+#       --T_cond 50 --N_rpm 3600 --SH_K 10 \
+#       --reverse_stack --normalize
 
 from __future__ import annotations
 
@@ -79,6 +97,34 @@ except ImportError:
             Molinaroli_2017_Compressor_OilPath = None
 
 plt.style.use("ebc.paper.mplstyle")
+
+
+# =========================================================
+# Display name mappings (for plot titles)
+# =========================================================
+MODEL_DISPLAY_NAMES = {
+    "original": "Basismodell",
+    "orig": "Basismodell",
+    "modified": "Modellausbaustufe I",
+    "mod": "Modellausbaustufe I",
+    "oil_path": "Modellausbaustufe II",
+    "oilpath": "Modellausbaustufe II",
+}
+
+OIL_DISPLAY_NAMES = {
+    "lpg68": "PAG 68",
+    "lpg 68": "PAG 68",
+    "lpg100": "PAG 100",
+    "lpg 100": "PAG 100",
+}
+
+
+def _display_model(name: str) -> str:
+    return MODEL_DISPLAY_NAMES.get(str(name).lower().strip(), str(name))
+
+
+def _display_oil(name: str) -> str:
+    return OIL_DISPLAY_NAMES.get(str(name).lower().strip(), str(name))
 
 
 # =========================================================
@@ -408,6 +454,8 @@ def plot_loss_curves(
     out_path: Path,
     normalize: bool = False,
     plot_mode: str = "stacked_area",
+    x_axis: str = "vary",
+    reverse_stack: bool = False,
 ):
     series_list = list(sweep_results.items())
     n_series = len(series_list)
@@ -436,17 +484,31 @@ def plot_loss_curves(
             ax.set_title(f"{series_label}\n(keine gültigen Punkte)")
             continue
 
-        x = df["vary_value"].to_numpy(dtype=float)
+        # ---- x-axis selection ----
+        if x_axis == "pressure_ratio" and "pressure_ratio" in df.columns:
+            x = df["pressure_ratio"].to_numpy(dtype=float)
+            x_label_effective = "Druckverhältnis $p_{\\mathrm{dis}}/p_{\\mathrm{suc}}$"
+        else:
+            x = df["vary_value"].to_numpy(dtype=float)
+            x_label_effective = vary_label
+
+        # ---- sort by x for clean area/line plots ----
+        sort_idx = np.argsort(x)
+        x = x[sort_idx]
 
         loss_arrays = {}
         for col, label in loss_cols:
             if col in df.columns:
                 vals = df[col].to_numpy(dtype=float)
                 vals = np.where(np.isfinite(vals), vals, 0.0)
-                loss_arrays[label] = vals
+                loss_arrays[label] = vals[sort_idx]
 
         if not loss_arrays:
             continue
+
+        # ---- reverse stacking order if requested ----
+        if reverse_stack:
+            loss_arrays = dict(reversed(list(loss_arrays.items())))
 
         if normalize:
             total = np.zeros(len(x))
@@ -482,13 +544,13 @@ def plot_loss_curves(
                 )
 
         ax.set_title(series_label, fontsize=12)
-        ax.set_xlabel(vary_label)
+        ax.set_xlabel(x_label_effective)
 
         if normalize:
-            ax.set_ylabel("Anteil [%]")
+            ax.set_ylabel("Anteil in %")
             ax.set_ylim(0, 105)
         else:
-            ax.set_ylabel("Verlustleistung [W]")
+            ax.set_ylabel("Verlustleistung in W")
 
         ax.grid(True, linewidth=0.6, alpha=0.35)
 
@@ -502,14 +564,14 @@ def plot_loss_curves(
         fig.legend(
             handles, labels,
             loc="lower center",
-            bbox_to_anchor=(0.5, -0.02),
+            bbox_to_anchor=(0.5, 0.0),
             ncol=len(loss_cols),
             frameon=True,
             fontsize=11,
         )
 
-    fig.suptitle(title, fontsize=14, y=1.02)
-    fig.tight_layout()
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
     fig.savefig(out_path, format=out_path.suffix.lstrip("."), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -564,6 +626,16 @@ def main():
     # Plot options
     ap.add_argument("--normalize", action="store_true", help="Normalize to 100%%")
     ap.add_argument("--plot_mode", choices=["stacked_area", "lines"], default="stacked_area")
+    ap.add_argument(
+        "--x_axis", choices=["vary", "pressure_ratio"], default="vary",
+        help="X-axis variable: 'vary' uses the swept parameter, "
+             "'pressure_ratio' uses p_out/p_suc (computed for each point).",
+    )
+    ap.add_argument(
+        "--reverse_stack", action="store_true",
+        help="Reverse stacking order: viscosity-dependent at bottom, "
+             "speed-dependent in middle, load-dependent on top.",
+    )
     ap.add_argument("--out_dir", default="results/loss_curves")
     ap.add_argument("--out_format", choices=["png", "svg"], default="png")
 
@@ -604,6 +676,9 @@ def main():
     print(f"  Refrigerant: {args.refrigerant}")
     print(f"  m_dot_ref:   {params['m_dot_ref'] * 1e3:.4f} g/s")
     print(f"  Vary:        {args.vary}")
+    print(f"  X-axis:      {args.x_axis}")
+    if args.reverse_stack:
+        print(f"  Stack order: reversed (viscosity at bottom)")
 
     # -------------------------
     # Build sweep values and series
@@ -611,22 +686,22 @@ def main():
     vary_config = {
         "T_evap": {
             "values": np.linspace(args.T_evap_min, args.T_evap_max, args.n_points),
-            "label": "Verdampfungstemperatur [°C]",
+            "label": "Verdampfungstemperatur in °C",
             "series_params": ["T_cond", "N_rpm", "SH_K"],
         },
         "T_cond": {
             "values": np.linspace(args.T_cond_min, args.T_cond_max, args.n_points),
-            "label": "Kondensationstemperatur [°C]",
+            "label": "Kondensationstemperatur in °C",
             "series_params": ["T_evap", "N_rpm", "SH_K"],
         },
         "speed": {
             "values": np.linspace(args.N_rpm_min, args.N_rpm_max, args.n_points),
-            "label": "Drehzahl [rpm]",
+            "label": "Drehzahl in rpm",
             "series_params": ["T_evap", "T_cond", "SH_K"],
         },
         "superheat": {
             "values": np.linspace(args.SH_K_min, args.SH_K_max, args.n_points),
-            "label": "Überhitzung [K]",
+            "label": "Überhitzung in K",
             "series_params": ["T_evap", "T_cond", "N_rpm"],
         },
     }
@@ -730,15 +805,21 @@ def main():
     # Title
     # -------------------------
     norm_tag = " (normiert)" if args.normalize else ""
-    title = f"Verlustanteile vs. {vary_label}{norm_tag}"
-    title += f"\n{args.model.capitalize()} | Öl: {args.oil} | {args.refrigerant}"
+    if args.x_axis == "pressure_ratio":
+        x_tag = "Druckverhältnis"
+    else:
+        x_tag = vary_label
+    title = f"Verlustanteile vs. {x_tag}{norm_tag}"
+    title += f"\n{_display_model(args.model)} | Schmierstoff: {_display_oil(args.oil)}"
 
     # -------------------------
     # Plot
     # -------------------------
     stamp = _ts()
     norm_suffix = "_norm" if args.normalize else ""
-    out_path = out_dir / f"loss_curves_{args.vary}{norm_suffix}_{stamp}.{args.out_format}"
+    x_suffix = "_vs_pi" if args.x_axis == "pressure_ratio" else ""
+    rev_suffix = "_rev" if args.reverse_stack else ""
+    out_path = out_dir / f"loss_curves_{args.vary}{norm_suffix}{x_suffix}{rev_suffix}_{stamp}.{args.out_format}"
 
     plot_loss_curves(
         sweep_results=sweep_results,
@@ -748,6 +829,8 @@ def main():
         out_path=out_path,
         normalize=args.normalize,
         plot_mode=args.plot_mode,
+        x_axis=args.x_axis,
+        reverse_stack=args.reverse_stack,
     )
 
     # -------------------------

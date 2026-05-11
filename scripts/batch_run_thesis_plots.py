@@ -19,7 +19,7 @@
 #
 # Examples:
 #   # Full run:
-#   python scripts/batch_run_thesis_plots.py --filter_model original
+#   python scripts/batch_run_thesis_plots.py
 #
 #   # Only parity plots:
 #   python scripts/batch_run_thesis_plots.py --phase A

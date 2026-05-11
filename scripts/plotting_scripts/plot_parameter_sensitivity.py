@@ -48,20 +48,29 @@ from vclibpy.components.compressors.rolling_piston_Molinaroli_2017_modified impo
 )
 
 # Optional: oil_path model
+# The actual class name in rolling_piston_Molinaroli_oil_path.py is
+# Molinaroli_2017_Compressor_Oil_Path (with underscore between Oil and Path).
+# We also keep alternative names as fallback for older versions.
 try:
     from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
-        Molinaroli_2017_Compressor_OilPath,
+        Molinaroli_2017_Compressor_Oil_Path as Molinaroli_2017_Compressor_OilPath,
     )
     OIL_PATH_AVAILABLE = True
 except ImportError:
     try:
         from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
-            Molinaroli_OilPath_Compressor as Molinaroli_2017_Compressor_OilPath,
+            Molinaroli_2017_Compressor_OilPath,
         )
         OIL_PATH_AVAILABLE = True
     except ImportError:
-        OIL_PATH_AVAILABLE = False
-        Molinaroli_2017_Compressor_OilPath = None
+        try:
+            from vclibpy.components.compressors.rolling_piston_Molinaroli_oil_path import (
+                Molinaroli_OilPath_Compressor as Molinaroli_2017_Compressor_OilPath,
+            )
+            OIL_PATH_AVAILABLE = True
+        except ImportError:
+            OIL_PATH_AVAILABLE = False
+            Molinaroli_2017_Compressor_OilPath = None
 
 plt.style.use("ebc.paper.mplstyle")
 
@@ -73,6 +82,59 @@ F_REF = 50.0
 T_REF = 273.15
 Q_REF = 1.0
 T_DIS_NORM_K = 50.0
+
+
+# =========================================================
+# Display-name mappings for the plot title
+# =========================================================
+# Oil: data values use "LPG 68" / "LPG 100" / "all" (or normalised
+# variants like "lpg68"). The publication uses PAG instead of LPG.
+OIL_DISPLAY_MAP = {
+    "lpg68":   "PAG 68",
+    "lpg 68":  "PAG 68",
+    "lpg100":  "PAG 100",
+    "lpg 100": "PAG 100",
+    "all":     "PAG 68 + PAG 100",
+}
+
+# Refrigerant: translate to German.
+REFRIGERANT_DISPLAY_MAP = {
+    "propane": "Propan",
+    "r290":    "Propan",
+    "propan":  "Propan",
+}
+
+# Model stage: translate to German naming for the publication.
+MODEL_DISPLAY_MAP = {
+    "original": "Basismodell",
+    "orig":     "Basismodell",
+    "modified": "Modellausbaustufe I",
+    "mod":      "Modellausbaustufe I",
+    "oil_path": "Modellausbaustufe II",
+    "oilpath":  "Modellausbaustufe II",
+}
+
+
+def display_oil(name: str) -> str:
+    """Return the publication-style display name for an oil specifier."""
+    key = str(name).strip().lower().replace(" ", "")
+    if key in OIL_DISPLAY_MAP:
+        return OIL_DISPLAY_MAP[key]
+    # also accept already-spaced variants like "lpg 68"
+    key2 = str(name).strip().lower()
+    return OIL_DISPLAY_MAP.get(key2, str(name))
+
+
+def display_refrigerant(name: str) -> str:
+    """Return the German display name for the refrigerant."""
+    key = str(name).strip().lower()
+    return REFRIGERANT_DISPLAY_MAP.get(key, str(name))
+
+
+def display_model(name: str) -> str:
+    """Return the German display name for the model stage."""
+    key = str(name).strip().lower()
+    return MODEL_DISPLAY_MAP.get(key, str(name))
 
 
 # =========================================================
@@ -822,10 +884,14 @@ def main():
     # -------------------------
     # Plot formatting
     # -------------------------
-    ax.set_xlabel("Actual parameter / Identified parameter [-]")
-    ax.set_ylabel("$g / g_{min}$ [-]")
+    ax.set_xlabel(" variierter Parameter / kalibrierter Parameter")
+    ax.set_ylabel("$g / g_{min}$")
 
-    title = f"Sensitivity | {args.oil} | {args.refrigerant} | {args.model}"
+    oil_str = display_oil(args.oil)
+    refrigerant_str = display_refrigerant(args.refrigerant)
+    model_str = display_model(args.model)
+
+    title = f"Parametersensitivität | {oil_str} | {refrigerant_str} | {model_str}"
     title += f"\n{args.selection_mode} ({len(rows_selected)} points)"
     ax.set_title(title)
 

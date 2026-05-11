@@ -624,7 +624,46 @@ def _extract_internal_states(rec: dict, comp) -> None:
         _add_compact_state(rec, prefix, getattr(comp, attr, None))
 
 
-def _extract_loss_terms(rec: dict, comp, model: str) -> None:
+def _get_diag_value(comp, fs_state, name: str):
+    """Read a diagnostic value from the compressor or, if needed, from fs_state.
+
+    Some oil-path diagnostics are written only to the FlowsheetState via
+    fs_state.set(...). Therefore validation should not rely exclusively on
+    compressor attributes.
+    """
+    value = getattr(comp, name, np.nan)
+    if np.isfinite(_finite(value)):
+        return value
+
+    if fs_state is None:
+        return np.nan
+
+    value = getattr(fs_state, name, np.nan)
+    if np.isfinite(_finite(value)):
+        return value
+
+    # Be defensive for FlowsheetState-like containers that expose dict-style data.
+    for attr_name in ("data", "states", "values", "_data"):
+        container = getattr(fs_state, attr_name, None)
+        if isinstance(container, dict) and name in container:
+            raw = container[name]
+            if isinstance(raw, dict):
+                raw = raw.get("value", raw.get("val", np.nan))
+            elif isinstance(raw, (tuple, list)) and len(raw) > 0:
+                raw = raw[0]
+            return raw
+
+    get_method = getattr(fs_state, "get", None)
+    if callable(get_method):
+        try:
+            return get_method(name)
+        except Exception:
+            pass
+
+    return np.nan
+
+
+def _extract_loss_terms(rec: dict, comp, model: str, fs_state=None) -> None:
     k = _model_key(model)
 
     rec["W_dot_int_W"] = _finite(getattr(comp, "W_dot_int", np.nan))
@@ -682,6 +721,13 @@ def _extract_loss_terms(rec: dict, comp, model: str) -> None:
         rec["w_KM_mix"] = _finite(getattr(comp, "w_KM_mix", np.nan))
         rec["w_KM_dis"] = _finite(getattr(comp, "w_KM_dis", np.nan))
 
+        # Additional discharge HT diagnostics from the oil-path model/fs_state
+        T_mix = _finite(_get_diag_value(comp, fs_state, "T_mix"))
+        rec["T_mix_C"] = k_to_c(T_mix) if np.isfinite(T_mix) else float("nan")
+        rec["cp_comb_J_kgK"] = _finite(_get_diag_value(comp, fs_state, "cp_comb"))
+        rec["eps_dis"] = _finite(_get_diag_value(comp, fs_state, "eps_dis"))
+        rec["m_dot_total_kg_s"] = _finite(_get_diag_value(comp, fs_state, "m_dot_total"))
+
         # Gas exiting compressor (should ≈ m_suc for mass balance check)
         rec["m_dot_gas_exit_kg_s"] = _finite(getattr(comp, "m_dot_KM_gas", np.nan))
 
@@ -725,6 +771,7 @@ def _fill_nan_loss_terms(rec: dict, model: str) -> None:
             # Discharge side (3-stage chain)
             "Q_dis_total_W", "Q_dissolve_3_W", "Q_oil_sump_W",
             "w_KM_mix", "w_KM_dis",
+            "T_mix_C", "cp_comb_J_kgK", "eps_dis", "m_dot_total_kg_s",
             "m_dot_gas_exit_kg_s",
             # Predictor-corrector
             "T_dis_est_C", "T_dis_corr_C", "pc_convergence_gap_K",
@@ -1029,7 +1076,7 @@ def main():
             rec["T_dis_calc_C"] = k_to_c(T_dis_K)
 
             _extract_internal_states(rec, comp)
-            _extract_loss_terms(rec, comp, args.model)
+            _extract_loss_terms(rec, comp, args.model, fs_state=fs_state)
 
             if has_m_meas and pd.notna(row.get(args.col_m_meas)):
                 rec["m_meas_g_s"] = float(row[args.col_m_meas])

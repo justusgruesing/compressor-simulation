@@ -1,5 +1,6 @@
 """
 python scripts/fit_oil_properties.py
+python scripts/fit_oil_properties.py --plots cp
 Fitting der linearen Korrelationen für die spezifische Wärmekapazität cp
 und die Wärmeleitfähigkeit lambda von Reniso LPG 68 und LPG 100.
 
@@ -18,23 +19,119 @@ Ergebnis:
     self._cp_a, self._cp_b, self._lam_a, self._lam_b.
 
 Ausgabe:
-    results/oil_properties/oil_property_fits.pdf           — Fit-Plots
-    results/oil_properties/oil_property_fits_residuals.pdf — Residuenplots
-    results/oil_properties/fit_summary.txt                 — Koeffizienten und Fehlermaße
+    results/oil_properties/oil_property_fits.pdf              — Fit-Plots für cp und lambda
+    results/oil_properties/oil_property_fits_residuals.pdf    — Residuenplots für cp und lambda
+    results/oil_properties/oil_property_fits_cp.pdf           — Fit-Plots nur für cp bei --plots cp
+    results/oil_properties/oil_property_fits_cp_residuals.pdf — Residuenplots nur für cp bei --plots cp
+    results/oil_properties/fit_summary.txt                    — Koeffizienten und Fehlermaße
 
 Autor: [Name eintragen]
 Datum: [Datum eintragen]
 """
 
+import argparse
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
 
 # =====================================================================
-#  Ausgabeverzeichnis (hier anpassen)
+#  Matplotlib-Style laden (EBC Paper-Style)
+# =====================================================================
+# Pfad ggf. anpassen — Standard: Style-Datei liegt im selben Ordner wie das Skript
+_STYLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ebc_paper.mplstyle")
+if os.path.exists(_STYLE_FILE):
+    plt.style.use(_STYLE_FILE)
+else:
+    # Fallback: nach Style-Datei im aktuellen Arbeitsverzeichnis suchen
+    if os.path.exists("ebc_paper.mplstyle"):
+        plt.style.use("ebc_paper.mplstyle")
+
+
+# =====================================================================
+#  Deutsche Zahlenformatierung (Dezimalkomma statt -punkt)
+# =====================================================================
+
+def _de_tick(x, pos=None):
+    """
+    Tick-Formatter: ersetzt den Dezimalpunkt durch ein Komma und
+    verwendet ein typographisches Minuszeichen (U+2212).
+    """
+    return f"{x:g}".replace("-", "\u2212").replace(".", ",")
+
+
+_DE_FORMATTER = mticker.FuncFormatter(_de_tick)
+
+
+def _apply_de_formatter(ax):
+    """Setzt deutschen Dezimaltrenner auf x- und y-Achsen-Ticks."""
+    ax.xaxis.set_major_formatter(_DE_FORMATTER)
+    ax.yaxis.set_major_formatter(_DE_FORMATTER)
+
+
+def _de(value, fmt):
+    """Formatiert einen Float mit dt. Dezimaltrenner gemäß format spec."""
+    return format(value, fmt).replace(".", ",")
+
+
+def _fit_label(a, b, b_fmt=".6f"):
+    """
+    Erzeugt einen Legenden-Eintrag der Form  'Fit: a +/- |b|·T'
+    mit deutschem Dezimalkomma und typographischem Minus.
+    """
+    sign = "+" if b >= 0 else "\u2212"
+    return f"Fit: {_de(a, '.4f')} {sign} {_de(abs(b), b_fmt)}·T"
+
+
+def _savefig_multi(fig, basename):
+    """Speichert eine Figure in allen Formaten aus OUTPUT_FORMATS."""
+    for ext in OUTPUT_FORMATS:
+        path = os.path.join(OUTPUT_DIR, f"{basename}.{ext}")
+        # dpi nur für Raster-Formate relevant; bei Vektor-Ausgaben ignoriert
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+
+
+# =====================================================================
+#  Ausgabeverzeichnis und -formate (hier anpassen)
 # =====================================================================
 OUTPUT_DIR = os.path.join("results", "oil_properties")
+
+# Gewünschte Dateiformate für die Plots — beliebig erweiterbar.
+# Unterstützt: 'pdf', 'png', 'svg' (und alle weiteren Matplotlib-Backends).
+OUTPUT_FORMATS = ("pdf", "png", "svg")
+
+
+def parse_args():
+    """Liest optionale Kommandozeilenargumente ein."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fit der Öl-Stoffwerte und Ausgabe der zugehörigen Plotdateien. "
+            "Standardmäßig werden cp und lambda geplottet."
+        )
+    )
+    parser.add_argument(
+        "--plots",
+        choices=("all", "cp", "lambda"),
+        default="all",
+        help=(
+            "Auswahl der auszugebenden Plots: "
+            "'all' für cp und lambda, 'cp' nur für spezifische Wärmekapazität, "
+            "'lambda' nur für Wärmeleitfähigkeit."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=OUTPUT_DIR,
+        help="Ausgabeverzeichnis für Summary und Plotdateien.",
+    )
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+OUTPUT_DIR = ARGS.output_dir
+PLOT_SELECTION = ARGS.plots
 
 # =====================================================================
 #  Messdaten aus Herstellerdatenblättern
@@ -251,92 +348,154 @@ print(f"\nSummary gespeichert: {summary_path}")
 T_plot = np.linspace(T_K_68[0], T_K_68[-1], 200)
 T_plot_C = T_plot - 273.15
 
-fig = plt.figure(figsize=(14, 10))
-gs = GridSpec(2, 2, hspace=0.35, wspace=0.3)
 
-ax1 = fig.add_subplot(gs[0, 0])
-ax1.plot(T_celsius_68, cp_68, 'o', color='#534AB7', markersize=6, label='Herstellerdaten')
-ax1.plot(T_plot_C, a_cp_68 + b_cp_68 * T_plot, '-', color='#534AB7', linewidth=1.5,
-         label=f'Fit: {a_cp_68:.4f} + {b_cp_68:.6f}·T')
-ax1.set_xlabel('Temperatur in °C')
-ax1.set_ylabel('$c_p$ in kJ/(kg·K)')
-ax1.set_title('PAG 68 — Spezifische Wärmekapazität')
-ax1.legend(fontsize=9)
-ax1.grid(True, alpha=0.3)
-
-ax2 = fig.add_subplot(gs[0, 1])
-ax2.plot(T_celsius_100, cp_100, 's', color='#0F6E56', markersize=6, label='Herstellerdaten')
-ax2.plot(T_plot_C, a_cp_100 + b_cp_100 * T_plot, '-', color='#0F6E56', linewidth=1.5,
-         label=f'Fit: {a_cp_100:.4f} + {b_cp_100:.6f}·T')
-ax2.set_xlabel('Temperatur in °C')
-ax2.set_ylabel('$c_p$ in kJ/(kg·K)')
-ax2.set_title('PAG 100 — Spezifische Wärmekapazität')
-ax2.legend(fontsize=9)
-ax2.grid(True, alpha=0.3)
-
-ax3 = fig.add_subplot(gs[1, 0])
-ax3.plot(T_celsius_68, lam_68, 'o', color='#D85A30', markersize=6, label='Herstellerdaten')
-ax3.plot(T_plot_C, a_lam_68 + b_lam_68 * T_plot, '-', color='#D85A30', linewidth=1.5,
-         label=f'Fit: {a_lam_68:.4f} + {b_lam_68:.8f}·T')
-ax3.set_xlabel('Temperatur in °C')
-ax3.set_ylabel('$\\lambda$ in W/(m·K)')
-ax3.set_title('PAG 68 — Wärmeleitfähigkeit')
-ax3.legend(fontsize=9)
-ax3.grid(True, alpha=0.3)
-
-ax4 = fig.add_subplot(gs[1, 1])
-ax4.plot(T_celsius_100, lam_100, 's', color='#993556', markersize=6, label='Herstellerdaten')
-ax4.plot(T_plot_C, a_lam_100 + b_lam_100 * T_plot, '-', color='#993556', linewidth=1.5,
-         label=f'Fit: {a_lam_100:.4f} + {b_lam_100:.8f}·T')
-ax4.set_xlabel('Temperatur in °C')
-ax4.set_ylabel('$\\lambda$ in W/(m·K)')
-ax4.set_title('PAG 100 — Wärmeleitfähigkeit')
-ax4.legend(fontsize=9)
-ax4.grid(True, alpha=0.3)
-
-fig.suptitle('Lineare Fits der Reinstoffwerte für PAG 68 und PAG 100',
-             fontsize=13, fontweight='bold', y=0.98)
-
-plt.savefig(os.path.join(OUTPUT_DIR, 'oil_property_fits.png'), dpi=150, bbox_inches='tight')
-plt.savefig(os.path.join(OUTPUT_DIR, 'oil_property_fits.pdf'), bbox_inches='tight')
-print(f"Fit-Plots gespeichert in: {OUTPUT_DIR}")
+def _plot_fit_axis(ax, T_C, y_data, marker, color, a, b, b_fmt,
+                   ylabel, title):
+    """Zeichnet Herstellerdaten und linearen Fit in eine Achse."""
+    ax.plot(T_C, y_data, marker, color=color, markersize=6,
+            label='Herstellerdaten')
+    ax.plot(T_plot_C, a + b * T_plot, '-', color=color, linewidth=1.5,
+            label=_fit_label(a, b, b_fmt))
+    ax.set_xlabel('Temperatur in °C')
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    _apply_de_formatter(ax)
 
 
-# =====================================================================
-#  Residuenplots
-# =====================================================================
-
-fig2, axes = plt.subplots(2, 2, figsize=(14, 8))
-fig2.suptitle('Residuen der linearen Fits (Messwert − Fit)',
-              fontsize=13, fontweight='bold')
-
-datasets = [
-    (axes[0, 0], T_celsius_68, cp_68, fit_cp_68, T_K_68,
-     'LPG 68 — $c_p$', '#534AB7'),
-    (axes[0, 1], T_celsius_100, cp_100, fit_cp_100, T_K_100,
-     'LPG 100 — $c_p$', '#0F6E56'),
-    (axes[1, 0], T_celsius_68, lam_68, fit_lam_68, T_K_68,
-     'LPG 68 — $\\lambda$', '#D85A30'),
-    (axes[1, 1], T_celsius_100, lam_100, fit_lam_100, T_K_100,
-     'LPG 100 — $\\lambda$', '#993556'),
-]
-
-for ax, T_C, y_data, fit, T_K, title, color in datasets:
+def _plot_residual_axis(ax, T_C, y_data, fit, T_K, title, color):
+    """Zeichnet relative Residuen eines linearen Fits in eine Achse."""
     y_fit = fit["a"] + fit["b"] * T_K
     residuals = y_data - y_fit
     rel_residuals = residuals / y_data * 100
 
-    ax.bar(T_C, rel_residuals, width=8, color=color, alpha=0.7, edgecolor=color)
+    ax.bar(T_C, rel_residuals, width=8, color=color, alpha=0.7,
+           edgecolor=color)
     ax.axhline(y=0, color='black', linewidth=0.5)
-    ax.set_xlabel('Temperatur [°C]')
-    ax.set_ylabel('Relativer Fehler [%]')
+    ax.set_xlabel('Temperatur in °C')
+    ax.set_ylabel('Relativer Fehler in %')
     ax.set_title(title)
     ax.set_ylim(-2.5, 2.5)
     ax.grid(True, alpha=0.3)
+    _apply_de_formatter(ax)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'oil_property_fits_residuals.png'), dpi=150, bbox_inches='tight')
-plt.savefig(os.path.join(OUTPUT_DIR, 'oil_property_fits_residuals.pdf'), bbox_inches='tight')
-print(f"Residuenplots gespeichert in: {OUTPUT_DIR}")
+
+def _plot_fit_selection(selection):
+    """Erzeugt die Fit-Plots abhängig von der gewählten Stoffgröße."""
+    if selection == "all":
+        fig = plt.figure(figsize=(14, 10))
+        gs = GridSpec(2, 2, hspace=0.35, wspace=0.3)
+        axes = [
+            fig.add_subplot(gs[0, 0]),
+            fig.add_subplot(gs[0, 1]),
+            fig.add_subplot(gs[1, 0]),
+            fig.add_subplot(gs[1, 1]),
+        ]
+        datasets = [
+            (axes[0], T_celsius_68, cp_68, 'o', '#534AB7',
+             a_cp_68, b_cp_68, ".6f", '$c_p$ in kJ/(kg·K)',
+             'PAG 68 — Spezifische Wärmekapazität'),
+            (axes[1], T_celsius_100, cp_100, 's', '#0F6E56',
+             a_cp_100, b_cp_100, ".6f", '$c_p$ in kJ/(kg·K)',
+             'PAG 100 — Spezifische Wärmekapazität'),
+            (axes[2], T_celsius_68, lam_68, 'o', '#D85A30',
+             a_lam_68, b_lam_68, ".8f", '$\\lambda$ in W/(m·K)',
+             'PAG 68 — Wärmeleitfähigkeit'),
+            (axes[3], T_celsius_100, lam_100, 's', '#993556',
+             a_lam_100, b_lam_100, ".8f", '$\\lambda$ in W/(m·K)',
+             'PAG 100 — Wärmeleitfähigkeit'),
+        ]
+        basename = "oil_property_fits"
+
+    elif selection == "cp":
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        datasets = [
+            (axes[0], T_celsius_68, cp_68, 'o', '#534AB7',
+             a_cp_68, b_cp_68, ".6f", '$c_p$ in kJ/(kg·K)',
+             'PAG 68 — Spezifische Wärmekapazität'),
+            (axes[1], T_celsius_100, cp_100, 's', '#0F6E56',
+             a_cp_100, b_cp_100, ".6f", '$c_p$ in kJ/(kg·K)',
+             'PAG 100 — Spezifische Wärmekapazität'),
+        ]
+        basename = "oil_property_fits_cp"
+
+    elif selection == "lambda":
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        datasets = [
+            (axes[0], T_celsius_68, lam_68, 'o', '#D85A30',
+             a_lam_68, b_lam_68, ".8f", '$\\lambda$ in W/(m·K)',
+             'PAG 68 — Wärmeleitfähigkeit'),
+            (axes[1], T_celsius_100, lam_100, 's', '#993556',
+             a_lam_100, b_lam_100, ".8f", '$\\lambda$ in W/(m·K)',
+             'PAG 100 — Wärmeleitfähigkeit'),
+        ]
+        basename = "oil_property_fits_lambda"
+
+    else:
+        raise ValueError(f"Unbekannte Plot-Auswahl: {selection}")
+
+    for data in datasets:
+        _plot_fit_axis(*data)
+
+    fig.tight_layout()
+    _savefig_multi(fig, basename)
+    plt.close(fig)
+    print(f"Fit-Plots gespeichert als '{basename}.*' in: "
+          f"{OUTPUT_DIR} ({', '.join(OUTPUT_FORMATS)})")
+
+
+def _plot_residual_selection(selection):
+    """Erzeugt die Residuenplots abhängig von der gewählten Stoffgröße."""
+    if selection == "all":
+        fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+        axes_flat = axes.ravel()
+        datasets = [
+            (axes_flat[0], T_celsius_68, cp_68, fit_cp_68, T_K_68,
+             'LPG 68 — $c_p$', '#534AB7'),
+            (axes_flat[1], T_celsius_100, cp_100, fit_cp_100, T_K_100,
+             'LPG 100 — $c_p$', '#0F6E56'),
+            (axes_flat[2], T_celsius_68, lam_68, fit_lam_68, T_K_68,
+             'LPG 68 — $\\lambda$', '#D85A30'),
+            (axes_flat[3], T_celsius_100, lam_100, fit_lam_100, T_K_100,
+             'LPG 100 — $\\lambda$', '#993556'),
+        ]
+        basename = "oil_property_fits_residuals"
+
+    elif selection == "cp":
+        fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+        datasets = [
+            (axes[0], T_celsius_68, cp_68, fit_cp_68, T_K_68,
+             'LPG 68 — $c_p$', '#534AB7'),
+            (axes[1], T_celsius_100, cp_100, fit_cp_100, T_K_100,
+             'LPG 100 — $c_p$', '#0F6E56'),
+        ]
+        basename = "oil_property_fits_cp_residuals"
+
+    elif selection == "lambda":
+        fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+        datasets = [
+            (axes[0], T_celsius_68, lam_68, fit_lam_68, T_K_68,
+             'LPG 68 — $\\lambda$', '#D85A30'),
+            (axes[1], T_celsius_100, lam_100, fit_lam_100, T_K_100,
+             'LPG 100 — $\\lambda$', '#993556'),
+        ]
+        basename = "oil_property_fits_lambda_residuals"
+
+    else:
+        raise ValueError(f"Unbekannte Plot-Auswahl: {selection}")
+
+    for data in datasets:
+        _plot_residual_axis(*data)
+
+    fig.tight_layout()
+    _savefig_multi(fig, basename)
+    plt.close(fig)
+    print(f"Residuenplots gespeichert als '{basename}.*' in: "
+          f"{OUTPUT_DIR} ({', '.join(OUTPUT_FORMATS)})")
+
+
+_plot_fit_selection(PLOT_SELECTION)
+_plot_residual_selection(PLOT_SELECTION)
 
 print(f"\nAlle Ausgaben in: {os.path.abspath(OUTPUT_DIR)}")

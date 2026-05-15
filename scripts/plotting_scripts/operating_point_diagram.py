@@ -38,6 +38,21 @@ from matplotlib.lines import Line2D
 
 plt.style.use("ebc.paper.mplstyle")
 
+# =========================================================
+# Schriftgrößen (zentral anpassbar)
+# =========================================================
+# Werden über plt.rcParams gesetzt und überschreiben damit die Style-Datei.
+plt.rcParams.update({
+    "axes.labelsize": 20,    # Achsenbeschriftung (geringfügig größer)
+    "xtick.labelsize": 16,   # Tick-Labels
+    "ytick.labelsize": 16,
+})
+
+# Schriftgrößen, die wir hartkodiert in Legenden/Titeln verwenden
+LEGEND_FONTSIZE = 16          # Training/Validierung in der Legende
+LIMITS_LEGEND_FONTSIZE = 18   # Legende „Betriebsgrenzen" — deutlich größer
+TITLE_FONTSIZE = 18           # Subplot-Titel („Training (n=40)" etc. im split-Modus)
+
 
 # =========================================================
 # Constants
@@ -229,6 +244,17 @@ def _ts():
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
+def _save_multi(fig, out_base: Path, formats=("png",), dpi=300):
+    """
+    Speichert die Figur in mehreren Formaten.
+    out_base ist ein Pfad ohne Endung; pro Format wird ein File geschrieben.
+    """
+    for fmt in formats:
+        target = out_base.with_suffix(f".{fmt}")
+        fig.savefig(target, dpi=dpi, bbox_inches="tight", format=fmt)
+        print(f"  [OK] Saved: {target}")
+
+
 def load_split_template(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
 
@@ -335,10 +361,10 @@ def load_measured_points(
 # =========================================================
 # Plot: combined (one plot, different markers)
 # =========================================================
-def plot_combined(df, out_path, color_by=None, point_size=120,
+def plot_combined(df, out_base, color_by=None, point_size=120,
                   continuous_cbar=False, cmap="viridis", cbar_label="",
                   show_limits=False, refrigerant="propane",
-                  xlim=None, ylim=None):
+                  xlim=None, ylim=None, formats=("png",)):
     fig, ax = plt.subplots(figsize=(9, 8))
 
     train = df[df["is_train"]].copy()
@@ -362,35 +388,33 @@ def plot_combined(df, out_path, color_by=None, point_size=120,
             edgecolors="white", linewidths=0.8, zorder=3,
             label=f"Validierung (n={len(val)})",
         )
-        ax.legend(loc="upper left", fontsize=10, frameon=True)
+        ax.legend(loc="upper left", fontsize=LEGEND_FONTSIZE, frameon=True)
 
     # Operating limits
     if show_limits:
         limit_handles = draw_operating_limits(ax, refrigerant=refrigerant)
 
     _setup_axes(ax, df, xlim=xlim, ylim=ylim)
-    ax.set_title("Betriebspunkte — Training & Validierung", fontsize=13)
+    ax.set_title("Betriebspunkte — Training & Validierung", fontsize=TITLE_FONTSIZE)
 
     # Merge limit legend handles with existing legend
     if show_limits and limit_handles:
         existing_handles, existing_labels = ax.get_legend_handles_labels()
         ax.legend(handles=existing_handles + limit_handles,
-                  loc="upper left", fontsize=9, frameon=True)
+                  loc="upper left", fontsize=LIMITS_LEGEND_FONTSIZE, frameon=True)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches="tight",
-                format=out_path.suffix.lstrip("."))
+    _save_multi(fig, out_base, formats=formats, dpi=300)
     plt.close(fig)
-    print(f"  [OK] Saved: {out_path}")
 
 
 # =========================================================
 # Plot: split (two plots side by side)
 # =========================================================
-def plot_split(df, out_path, color_by=None, point_size=120,
+def plot_split(df, out_base, color_by=None, point_size=120,
                continuous_cbar=False, cmap="viridis", cbar_label="",
                show_limits=False, refrigerant="propane",
-               xlim=None, ylim=None):
+               xlim=None, ylim=None, formats=("png",)):
     fig, (ax_train, ax_val) = plt.subplots(1, 2, figsize=(16, 7),
                                             sharey=True, sharex=True)
 
@@ -435,21 +459,24 @@ def plot_split(df, out_path, color_by=None, point_size=120,
     _setup_axes(ax_train, df, xlim=xlim, ylim=ylim)
     _setup_axes(ax_val, df, xlim=xlim, ylim=ylim)
 
-    ax_train.set_title(f"Training (n={len(train)})", fontsize=13)
-    ax_val.set_title(f"Validierung (n={len(val)})", fontsize=13)
+    ax_train.set_title(f"Training (n={len(train)})", fontsize=TITLE_FONTSIZE)
+    ax_val.set_title(f"Validierung (n={len(val)})", fontsize=TITLE_FONTSIZE)
     ax_val.set_ylabel("")  # shared y axis
 
-    # Add limits legend below both panels
+    # Layout: bei aktiver Betriebsgrenzen-Legende unten Platz reservieren,
+    # damit Legende nicht in das x-Label läuft. tight_layout muss VOR
+    # der fig.legend aufgerufen werden, da fig.legend nicht im Layout-Manager
+    # berücksichtigt wird.
     if show_limits and limit_handles:
+        fig.tight_layout(rect=[0, 0.10, 1, 1])  # 10 % unten freilassen
         fig.legend(handles=limit_handles, loc="lower center",
-                   bbox_to_anchor=(0.5, -0.04), ncol=len(limit_handles),
-                   fontsize=9, frameon=True)
+                   bbox_to_anchor=(0.5, 0.01), ncol=len(limit_handles),
+                   fontsize=LIMITS_LEGEND_FONTSIZE, frameon=True)
+    else:
+        fig.tight_layout()
 
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches="tight",
-                format=out_path.suffix.lstrip("."))
+    _save_multi(fig, out_base, formats=formats, dpi=300)
     plt.close(fig)
-    print(f"  [OK] Saved: {out_path}")
 
 
 # =========================================================
@@ -521,7 +548,7 @@ def _plot_colored(ax, train, val, color_by, point_size, fig):
     handles.append(Line2D([0], [0], linestyle="None",
                           marker=VAL_MARKER, markersize=9, color="0.4",
                           markeredgecolor="white", label="Validierung"))
-    ax.legend(handles=handles, loc="upper left", fontsize=9, frameon=True)
+    ax.legend(handles=handles, loc="upper left", fontsize=LEGEND_FONTSIZE, frameon=True)
 
 
 def _plot_colored_single(ax, data, color_by, point_size, marker, fig,
@@ -561,7 +588,7 @@ def _plot_colored_single(ax, data, color_by, point_size, marker, fig,
             )
 
     if show_legend:
-        ax.legend(loc="upper left", fontsize=9, frameon=True)
+        ax.legend(loc="upper left", fontsize=LEGEND_FONTSIZE, frameon=True)
 
 
 # =========================================================
@@ -610,7 +637,7 @@ def _plot_continuous_cbar(ax, train, val, color_col, point_size, fig,
                markersize=9, color="0.4", markeredgecolor="white",
                label=f"Validierung (n={len(val)})"),
     ]
-    ax.legend(handles=handles, loc="upper left", fontsize=9, frameon=True)
+    ax.legend(handles=handles, loc="upper left", fontsize=LEGEND_FONTSIZE, frameon=True)
 
 
 def _plot_continuous_cbar_single(ax, data, color_col, point_size, marker,
@@ -727,7 +754,10 @@ def main():
 
     ap.add_argument("--point_size", type=float, default=120)
     ap.add_argument("--out_dir", default="results/operating_point_diagram", type=Path)
-    ap.add_argument("--out_format", choices=["png", "svg"], default="png")
+    ap.add_argument("--out_format", choices=["png", "svg", "pdf"],
+                    default=["png", "svg", "pdf"], nargs="+",
+                    help="Ausgabeformat(e); mehrere Werte erlaubt. "
+                         "Default: png svg pdf (Datei wird in allen Formaten gespeichert).")
 
     args = ap.parse_args()
 
@@ -805,20 +835,22 @@ def main():
     limits_tag = "_limits" if args.show_limits else ""
 
     if args.mode == "combined":
-        out_path = out_dir / f"op_diagram_combined_{data_tag}{oil_tag}{color_tag}{limits_tag}_{stamp}.{args.out_format}"
-        plot_combined(df, out_path, color_by=color_col, point_size=args.point_size,
+        out_base = out_dir / f"op_diagram_combined_{data_tag}{oil_tag}{color_tag}{limits_tag}_{stamp}"
+        plot_combined(df, out_base, color_by=color_col, point_size=args.point_size,
                       continuous_cbar=continuous_cbar, cmap=args.cmap,
                       cbar_label=cbar_label,
                       show_limits=args.show_limits, refrigerant=args.refrigerant,
-                      xlim=args.xlim, ylim=args.ylim)
+                      xlim=args.xlim, ylim=args.ylim,
+                      formats=tuple(args.out_format))
 
     elif args.mode == "split":
-        out_path = out_dir / f"op_diagram_split_{data_tag}{oil_tag}{color_tag}{limits_tag}_{stamp}.{args.out_format}"
-        plot_split(df, out_path, color_by=color_col, point_size=args.point_size,
+        out_base = out_dir / f"op_diagram_split_{data_tag}{oil_tag}{color_tag}{limits_tag}_{stamp}"
+        plot_split(df, out_base, color_by=color_col, point_size=args.point_size,
                    continuous_cbar=continuous_cbar, cmap=args.cmap,
                    cbar_label=cbar_label,
                    show_limits=args.show_limits, refrigerant=args.refrigerant,
-                   xlim=args.xlim, ylim=args.ylim)
+                   xlim=args.xlim, ylim=args.ylim,
+                   formats=tuple(args.out_format))
 
     print(f"\nDone. Output: {out_dir}")
 

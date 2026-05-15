@@ -35,7 +35,7 @@
 #
 #   results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv
 #   # Sweep T_evap, plot against pressure ratio:
-#   python scripts/plotting_scripts/loss_curves.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --vary T_cond --T_cond_min 25 --T_cond_max 65 --T_evap 0 --N_rpm 4200 --SH_K 10 --x_axis pressure_ratio
+#   python scripts/plotting_scripts/loss_curves.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --vary T_cond --T_cond_min 25 --T_cond_max 65 --T_evap 0 --N_rpm 3600 --SH_K 10 --x_axis pressure_ratio
 #
 #   # Sweep T_evap, plot against pressure ratio:
 #   python scripts/plotting_scripts/loss_curves.py \
@@ -97,6 +97,19 @@ except ImportError:
             Molinaroli_2017_Compressor_OilPath = None
 
 plt.style.use("ebc.paper.mplstyle")
+
+# =========================================================
+# Schriftgrößen (zentral anpassbar)
+# =========================================================
+plt.rcParams.update({
+    "axes.labelsize": 17,    # Achsenbeschriftung
+    "xtick.labelsize": 14,
+    "ytick.labelsize": 14,
+})
+
+SUBPLOT_TITLE_FONTSIZE = 15   # Serienbeschriftung über jedem Subplot
+SUPTITLE_FONTSIZE = 17        # Übergeordnete Figure-Überschrift
+LEGEND_FONTSIZE = 14          # Legende der Verlustanteile
 
 
 # =========================================================
@@ -487,7 +500,7 @@ def plot_loss_curves(
         # ---- x-axis selection ----
         if x_axis == "pressure_ratio" and "pressure_ratio" in df.columns:
             x = df["pressure_ratio"].to_numpy(dtype=float)
-            x_label_effective = "Druckverhältnis $p_{\\mathrm{dis}}/p_{\\mathrm{suc}}$"
+            x_label_effective = "Druckverhältnis $p_{\\mathrm{aus}}/p_{\\mathrm{ein}}$"
         else:
             x = df["vary_value"].to_numpy(dtype=float)
             x_label_effective = vary_label
@@ -543,7 +556,7 @@ def plot_loss_curves(
                     label=label,
                 )
 
-        ax.set_title(series_label, fontsize=12)
+        ax.set_title(series_label, fontsize=SUBPLOT_TITLE_FONTSIZE)
         ax.set_xlabel(x_label_effective)
 
         if normalize:
@@ -567,10 +580,10 @@ def plot_loss_curves(
             bbox_to_anchor=(0.5, 0.0),
             ncol=len(loss_cols),
             frameon=True,
-            fontsize=11,
+            fontsize=LEGEND_FONTSIZE,
         )
 
-    fig.suptitle(title, fontsize=14)
+    fig.suptitle(title, fontsize=SUPTITLE_FONTSIZE)
     fig.tight_layout(rect=[0, 0.06, 1, 0.95])
     fig.savefig(out_path, format=out_path.suffix.lstrip("."), dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -738,7 +751,7 @@ def main():
         "T_evap": ("$T_{evap}$", "°C"),
         "T_cond": ("$T_{cond}$", "°C"),
         "N_rpm": ("N", "rpm"),
-        "SH_K": ("SH", "K"),
+        "SH_K": ("ÜH", "K"),
     }
 
     for combo in series_combinations:

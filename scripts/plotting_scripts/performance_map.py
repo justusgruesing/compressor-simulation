@@ -86,6 +86,149 @@ Q_REF = 1.0
 
 
 # =========================================================
+# Display-name mappings for plot titles / labels
+# =========================================================
+# Oil: data values use "LPG68" / "LPG100" / "all" (or spaced variants).
+# The publication uses PAG instead of LPG.
+OIL_DISPLAY_MAP = {
+    "lpg68":   "PAG 68",
+    "lpg 68":  "PAG 68",
+    "lpg100":  "PAG 100",
+    "lpg 100": "PAG 100",
+    "all":     "Beide",
+}
+
+# Model stage: shorter German labels for the publication.
+MODEL_DISPLAY_MAP = {
+    "original": "Basis",
+    "orig":     "Basis",
+    "modified": "Stufe I",
+    "mod":      "Stufe I",
+    "oil_path": "Stufe II",
+    "oilpath":  "Stufe II",
+}
+
+
+def display_oil(name: str) -> str:
+    """Return the publication-style display name for an oil specifier."""
+    if name is None:
+        return ""
+    key = str(name).strip().lower().replace(" ", "")
+    if key in OIL_DISPLAY_MAP:
+        return OIL_DISPLAY_MAP[key]
+    key2 = str(name).strip().lower()
+    return OIL_DISPLAY_MAP.get(key2, str(name))
+
+
+def display_model(name: str) -> str:
+    """Return the publication-style display name for the model stage."""
+    if name is None:
+        return ""
+    key = str(name).strip().lower()
+    return MODEL_DISPLAY_MAP.get(key, str(name))
+
+
+# =========================================================
+# Operating envelope (Cui Fig. 3.6 / Table 3.4) — same as
+# operating_map_split.py. Used to mask the heatmap area outside
+# the allowed operating range.
+# =========================================================
+ENVELOPE_UPPER = np.array([
+    [-22.0, 68.0],
+    [ -5.0, 80.0],
+    [ 10.0, 80.0],
+    [ 25.0, 70.0],
+])
+
+P_SUC_MIN_BAR = 2.0
+DELTA_P_MIN_BAR = 3.9
+LIMIT_COLOR = "#D32F2F"
+
+
+def _compute_min_pressure_curve(med, delta_p_bar=DELTA_P_MIN_BAR,
+                                T_evap_range=(-30.0, 27.0), n_points=80):
+    """Min. discharge T_sat such that p_cond - p_evap >= delta_p_bar."""
+    T_evap_arr = np.linspace(T_evap_range[0], T_evap_range[1], n_points)
+    T_evap_ok, T_cond_arr = [], []
+    for T_evap_C in T_evap_arr:
+        try:
+            T_evap_K = T_evap_C + 273.15
+            st_evap = med.calc_state("TQ", T_evap_K, 1.0)
+            p_evap = float(st_evap.p) / 1e5
+            p_cond_min = p_evap + delta_p_bar
+            st_cond = med.calc_state("PQ", p_cond_min * 1e5, 0.0)
+            T_cond_C = float(st_cond.T) - 273.15
+            T_evap_ok.append(T_evap_C)
+            T_cond_arr.append(T_cond_C)
+        except Exception:
+            pass
+    return np.array(T_evap_ok), np.array(T_cond_arr)
+
+
+def _compute_safety_T_evap(med, p_min_bar=P_SUC_MIN_BAR):
+    """T_evap (sat) at p_suc_min."""
+    try:
+        st = med.calc_state("PQ", p_min_bar * 1e5, 1.0)
+        return float(st.T) - 273.15
+    except Exception:
+        return -25.3
+
+
+def build_unified_boundary(med):
+    """Return closed polygon (Nx2 array, T_evap_C / T_cond_C) of the
+    unified operating envelope, plus the safety T_evap."""
+    T_evap_safety = _compute_safety_T_evap(med, P_SUC_MIN_BAR)
+
+    T_evap_mp, T_cond_mp = _compute_min_pressure_curve(
+        med, delta_p_bar=DELTA_P_MIN_BAR,
+        T_evap_range=(T_evap_safety, ENVELOPE_UPPER[-1, 0]),
+        n_points=80,
+    )
+
+    T_evap_right = float(ENVELOPE_UPPER[-1, 0])
+    T_cond_right_mp = float(T_cond_mp[-1]) if len(T_cond_mp) > 0 else 25.0
+
+    env_T_evap_left = ENVELOPE_UPPER[0, 0]
+    env_T_cond_left = ENVELOPE_UPPER[0, 1]
+    env_T_evap_next = ENVELOPE_UPPER[1, 0] if len(ENVELOPE_UPPER) > 1 else env_T_evap_left
+    env_T_cond_next = ENVELOPE_UPPER[1, 1] if len(ENVELOPE_UPPER) > 1 else env_T_cond_left
+    if T_evap_safety <= env_T_evap_left:
+        T_cond_top_at_safety = env_T_cond_left
+    else:
+        frac = (T_evap_safety - env_T_evap_left) / max(
+            1e-9, env_T_evap_next - env_T_evap_left
+        )
+        T_cond_top_at_safety = env_T_cond_left + frac * (env_T_cond_next - env_T_cond_left)
+
+    T_cond_bot_at_safety = float(T_cond_mp[0]) if len(T_cond_mp) > 0 else 10.0
+
+    vertices = []
+    vertices.append([T_evap_safety, T_cond_bot_at_safety])
+    vertices.append([T_evap_safety, T_cond_top_at_safety])
+    for pt in ENVELOPE_UPPER:
+        if pt[0] >= T_evap_safety:
+            vertices.append([pt[0], pt[1]])
+    vertices.append([T_evap_right, T_cond_right_mp])
+    for te, tc in zip(T_evap_mp[::-1], T_cond_mp[::-1]):
+        vertices.append([te, tc])
+    vertices.append(vertices[0])
+    return np.array(vertices), T_evap_safety
+
+
+def envelope_inside_mask(boundary, T_evap_grid, T_cond_grid):
+    """Return a 2D boolean mask of shape (n_cond, n_evap), True if the
+    (T_evap, T_cond) grid point lies inside the operating envelope."""
+    from matplotlib.path import Path as MplPath
+    poly = MplPath(boundary)
+    n_evap = len(T_evap_grid)
+    n_cond = len(T_cond_grid)
+    E, C = np.meshgrid(T_evap_grid, T_cond_grid)  # shape (n_cond, n_evap)
+    pts = np.column_stack([E.ravel(), C.ravel()])
+    inside = poly.contains_points(pts).reshape(n_cond, n_evap)
+    return inside
+
+
+# =========================================================
 # Parameter definitions
 # =========================================================
 PARAM_NAMES_ORIGINAL = [
@@ -368,10 +511,14 @@ def compute_grid(
     T_evap_grid, T_cond_grid,
     N_rpm, SH_K, T_amb_C,
     lsq_ftol=1e-12, lsq_xtol=1e-12, lsq_max_nfev=50000,
+    inside_mask=None,
 ):
     """
     Compute eta_is, lambda_h and zeta_gl over a 2D T_evap × T_cond grid.
     Returns (eta_grid, lambda_grid, zeta_grid) as 2D arrays of shape (n_T_cond, n_T_evap).
+
+    If `inside_mask` is given (boolean array of shape (n_T_cond, n_T_evap)),
+    grid points where the mask is False are skipped and remain NaN.
     """
     comp = make_compressor(
         model=model, N_max_hz=N_max_hz, V_h_m3=V_h_m3,
@@ -402,6 +549,10 @@ def compute_grid(
     for j, T_cond_C in enumerate(T_cond_grid):
         for i, T_evap_C in enumerate(T_evap_grid):
             n_done += 1
+
+            # Skip points outside the operating envelope (if a mask was passed)
+            if inside_mask is not None and not bool(inside_mask[j, i]):
+                continue
 
             # Skip invalid: T_cond must be > T_evap
             if T_cond_C <= T_evap_C:
@@ -449,6 +600,7 @@ def plot_heatmap(
     out_path: Path,
     cmap: str = "viridis",
     contour_levels: int = 10,
+    boundary: np.ndarray | None = None,
 ):
     """
     Plot a single 2D heatmap with contour lines on top.
@@ -515,8 +667,18 @@ def plot_heatmap(
     cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
     cbar.set_label(cbar_label)
 
-    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ in °C")
-    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ in °C")
+    # Operating envelope outline (optional)
+    if boundary is not None and len(boundary) > 1:
+        ax.plot(
+            boundary[:, 0], boundary[:, 1],
+            color=LIMIT_COLOR, linewidth=1.8,
+            linestyle="-", alpha=0.85, zorder=5,
+            label="Eingeschr\u00e4nkte Betriebsgrenzen",
+        )
+        ax.legend(loc="lower right", frameon=True, fontsize=9)
+
+    ax.set_xlabel("Verdampfungstemperatur $T_{Verd}$ in °C")
+    ax.set_ylabel("Kondensationstemperatur $T_{Kond}$ in °C")
     ax.set_title(title)
 
     # Set limits to grid extent (no padding)
@@ -540,6 +702,7 @@ def plot_heatmap_diff(
     out_path: Path,
     cmap: str = "RdBu_r",
     contour_levels: int = 10,
+    boundary: np.ndarray | None = None,
 ):
     """
     Plot a diverging 2D heatmap for difference grids, centered at zero.
@@ -609,8 +772,18 @@ def plot_heatmap_diff(
     cbar = fig.colorbar(mesh, ax=ax, pad=0.02)
     cbar.set_label(cbar_label)
 
-    ax.set_xlabel("Verdampfungstemperatur $T_{evap}$ in °C")
-    ax.set_ylabel("Kondensationstemperatur $T_{cond}$ in °C")
+    # Operating envelope outline (optional)
+    if boundary is not None and len(boundary) > 1:
+        ax.plot(
+            boundary[:, 0], boundary[:, 1],
+            color=LIMIT_COLOR, linewidth=1.8,
+            linestyle="-", alpha=0.85, zorder=5,
+            label="Eingeschr\u00e4nkte Betriebsgrenzen",
+        )
+        ax.legend(loc="lower right", frameon=True, fontsize=9)
+
+    ax.set_xlabel("Verdampfungstemperatur $T_{Verd}$ in °C")
+    ax.set_ylabel("Kondensationstemperatur $T_{Kond}$ in °C")
     ax.set_title(title)
 
     ax.set_xlim(T_evap_edges[0], T_evap_edges[-1])
@@ -684,6 +857,26 @@ def main():
     ap.add_argument("--out_dir", default="results/performance_map")
     ap.add_argument("--out_format", choices=["png", "svg"], default="png")
 
+    # Operating envelope (from Cui Fig. 3.6 / Table 3.4)
+    ap.add_argument(
+        "--apply_limits", dest="apply_limits", action="store_true",
+        help="Mask grid points outside the operating envelope (default: on)",
+    )
+    ap.add_argument(
+        "--no_apply_limits", dest="apply_limits", action="store_false",
+        help="Disable envelope masking; show the full grid.",
+    )
+    ap.set_defaults(apply_limits=True)
+    ap.add_argument(
+        "--show_limit_line", dest="show_limit_line", action="store_true",
+        help="Draw the operating envelope outline on each plot (default: on)",
+    )
+    ap.add_argument(
+        "--no_limit_line", dest="show_limit_line", action="store_false",
+        help="Do not draw the operating envelope outline.",
+    )
+    ap.set_defaults(show_limit_line=True)
+
     args = ap.parse_args()
 
     if not args.params_csv.exists():
@@ -729,8 +922,33 @@ def main():
     print(f"  T_cond range:    {args.T_cond_min} → {args.T_cond_max} °C")
     print(f"  Grid:            {args.n_grid}×{args.n_grid} = {args.n_grid**2} points")
     print(f"  Solver tol:      ftol={args.lsq_ftol:.0e}, xtol={args.lsq_xtol:.0e}, max_nfev={args.lsq_max_nfev}")
+    print(f"  Apply limits:    {args.apply_limits}")
+    print(f"  Show limit line: {args.show_limit_line}")
     if args.params_csv2 is not None:
         print(f"  Diff mode:       {args.oil} − {args.oil2}")
+
+    # -------------------------
+    # Operating envelope (Cui Fig. 3.6 / Table 3.4)
+    # -------------------------
+    boundary = None
+    inside_mask = None
+    if args.apply_limits or args.show_limit_line:
+        try:
+            boundary, T_evap_safety = build_unified_boundary(med)
+            print(f"  Envelope:        T_evap_safety = {T_evap_safety:.2f} °C, "
+                  f"{len(boundary)} polygon vertices")
+        except Exception as e:
+            print(f"  [WARN] Could not build operating envelope: {e}")
+            boundary = None
+
+    if args.apply_limits and boundary is not None:
+        T_evap_grid_tmp = np.linspace(args.T_evap_min, args.T_evap_max, args.n_grid)
+        T_cond_grid_tmp = np.linspace(args.T_cond_min, args.T_cond_max, args.n_grid)
+        inside_mask = envelope_inside_mask(boundary, T_evap_grid_tmp, T_cond_grid_tmp)
+        print(f"  Inside envelope: {int(inside_mask.sum())}/{inside_mask.size} grid points")
+
+    # Boundary used for line drawing only — passed to plot fns or None
+    plot_boundary = boundary if args.show_limit_line else None
 
     # -------------------------
     # Metric selection
@@ -772,6 +990,7 @@ def main():
         N_rpm=args.N_rpm, SH_K=args.SH_K, T_amb_C=args.T_amb_C,
         lsq_ftol=args.lsq_ftol, lsq_xtol=args.lsq_xtol,
         lsq_max_nfev=args.lsq_max_nfev,
+        inside_mask=inside_mask,
     )
 
     # -------------------------
@@ -796,6 +1015,7 @@ def main():
             N_rpm=args.N_rpm, SH_K=args.SH_K, T_amb_C=args.T_amb_C,
             lsq_ftol=args.lsq_ftol, lsq_xtol=args.lsq_xtol,
             lsq_max_nfev=args.lsq_max_nfev,
+            inside_mask=inside_mask,
         )
 
         # Compute differences (oil1 - oil2)
@@ -807,8 +1027,8 @@ def main():
     # Title base
     # -------------------------
     subtitle = (
-        f"{args.model.capitalize()} | Öl: {args.oil} | {args.refrigerant} | "
-        f"N={args.N_rpm:.0f} rpm | SH={args.SH_K:.0f} K"
+        f"{display_model(args.model)} | Öl: {display_oil(args.oil)} | "
+        f"N={args.N_rpm:.0f} rpm | ÜH={args.SH_K:.0f} K"
     )
 
     stamp = _ts()
@@ -855,6 +1075,7 @@ def main():
             out_path=out_path,
             cmap=info["cmap"],
             contour_levels=args.contour_levels,
+            boundary=plot_boundary,
         )
 
     # -------------------------
@@ -862,25 +1083,28 @@ def main():
     # -------------------------
     if diff_mode:
         diff_subtitle = (
-            f"{args.model.capitalize()} | {args.refrigerant} | "
-            f"N={args.N_rpm:.0f} rpm | SH={args.SH_K:.0f} K"
+            f"{display_model(args.model)} | "
+            f"N={args.N_rpm:.0f} rpm | ÜH={args.SH_K:.0f} K"
         )
+
+        oil1_disp = display_oil(args.oil)
+        oil2_disp = display_oil(args.oil2)
 
         diff_info = {
             "eta_is": {
                 "grid": eta_diff,
-                "cbar_label": "$\\Delta\\eta_{is}$ (LPG 68 $-$ LPG 100)",
-                "title_label": f"$\\Delta$ Isentroper Wirkungsgrad ({args.oil} $-$ {args.oil2})",
+                "cbar_label": f"$\\Delta\\eta_{{is}}$ ({oil1_disp} $-$ {oil2_disp})",
+                "title_label": f"$\\Delta$ Isentroper Wirkungsgrad ({oil1_disp} $-$ {oil2_disp})",
             },
             "lambda_h": {
                 "grid": lambda_diff,
-                "cbar_label": "$\\Delta\\lambda_h$ (LPG 68 $-$ LPG 100)",
-                "title_label": f"$\\Delta$ Liefergrad ({args.oil} $-$ {args.oil2})",
+                "cbar_label": f"$\\Delta\\lambda_h$ ({oil1_disp} $-$ {oil2_disp})",
+                "title_label": f"$\\Delta$ Liefergrad ({oil1_disp} $-$ {oil2_disp})",
             },
             "zeta_gl": {
                 "grid": zeta_diff,
-                "cbar_label": "$\\Delta\\zeta_{gl}$ (LPG 68 $-$ LPG 100)",
-                "title_label": f"$\\Delta$ Globaler Gütegrad ({args.oil} $-$ {args.oil2})",
+                "cbar_label": f"$\\Delta\\zeta_{{gl}}$ ({oil1_disp} $-$ {oil2_disp})",
+                "title_label": f"$\\Delta$ Globaler Gütegrad ({oil1_disp} $-$ {oil2_disp})",
             },
         }
 
@@ -900,6 +1124,7 @@ def main():
                 title=f"{dinfo['title_label']}\n{diff_subtitle}",
                 out_path=out_path,
                 contour_levels=args.contour_levels,
+                boundary=plot_boundary,
             )
 
     # -------------------------

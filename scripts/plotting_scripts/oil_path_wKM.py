@@ -29,7 +29,7 @@
 #   python scripts/plotting_scripts/oil_path_wKM.py --params_csv results/final_results/Oil_Path_LPG100/Fitting/fitted_params_lpg100_oil_path_ga_2026-04-18_041610.csv --oil PAG100 --T_evap -5 0 10 20 --T_cond 50 --out_format svg
 #
 #   # Vary T_cond instead:
-#   python scripts/plotting_scripts/oil_path_wKM.py --params_csv results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv --oil LPG68 --T_evap 10 --T_cond 30 40 50 60
+#   python scripts/plotting_scripts/oil_path_wKM.py --params_csv results/final_results/Oil_Path_LPG68/Fitting/fitted_params_lpg68_oil_path_ga_2026-04-17_113953.csv --oil LPG68 --T_evap -5 0 10 20 --T_cond 50 --out_format svg
 
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 #
 # Examples:
 #   # Validation CSV, color by superheat:
-#   python scripts/plotting_scripts/parity_plot.py --pred_csv results/validation/modified/detail/validation_detail_params_lpg68_val_lpg68_modified_validation_only_2026-04-14_151604.csv --color_by pressure_ratio
+#   python scripts/plotting_scripts/parity_plot.py --pred_csv results/validation/oil_path/detail/validation_detail_params_all_val_all_oil_path_all_2026-05-18_172946.csv --color_by train_validation --out_format svg
 #
 #   # Color by condensation temperature (computed from p_out via RefProp):
 #   python scripts/plotting_scripts/parity_plot.py --pred_csv ... --color_by T_cond

@@ -44,8 +44,28 @@ STYLE_PATH = Path("ebc.paper.mplstyle")
 # 3) Ausgabeordner (wird angelegt, falls noch nicht vorhanden)
 RESULTS_DIR = Path("results/plot_tmis_vs_tdis")
 
-# 4) Name der erzeugten Plot-Datei
-PLOT_FILENAME = "oil_path_tmix_vs_tdis.pdf"
+# 4) Basisname der erzeugten Plot-Datei (ohne Endung)
+PLOT_BASENAME = "oil_path_tmix_vs_tdis"
+
+# 5) Ausgabeformate — für jeden Eintrag wird eine Datei erzeugt.
+#    Unterstützt u. a. "pdf", "svg", "png".
+OUTPUT_FORMATS = ("pdf", "svg")
+
+
+# =====================================================================
+# Bezeichner-Mapping (Symbol → Anzeigename im Plot)
+# =====================================================================
+# Erlaubt es, die internen Variablennamen (z. B. "dis", "suc") von den
+# in der Beschriftung gezeigten Bezeichnern (z. B. "aus", "ein") zu trennen.
+VAR_DISPLAY = {
+    "dis": "aus",   # discharge → Austritt
+    "suc": "ein",   # suction   → Eintritt
+}
+
+# Vorgefertigte LaTeX-Substrings, die das Mapping verwenden:
+_DIS = VAR_DISPLAY["dis"]
+T_DIS_MEAS_TEX = rf"T_{{\mathrm{{{_DIS},gemessen}}}}"   # ergibt: T_{\mathrm{aus,meas}}
+T_DIS_TEX      = rf"T_{{\mathrm{{{_DIS}}}}}"        # ergibt: T_{\mathrm{aus}}
 
 
 # =====================================================================
@@ -87,10 +107,9 @@ df["is_hotspot"] = df["abs_e"] > HOTSPOT_THRESH_K
 # =====================================================================
 fig, ax = plt.subplots(figsize=(9.0, 7.0))
 
-# Winkelhalbierende
+# Winkelhalbierende (ohne Legendeneintrag — selbsterklärend im Plot)
 diag = np.linspace(*PLOT_RANGE_C, 100)
 ax.plot(diag, diag, color="0.4", lw=1.0, linestyle="-",
-        label=r"Winkelhalbierende $T^{(6)} = T_{\mathrm{dis,meas}}$",
         zorder=1)
 
 # Kritische Temperatur als horizontale Linie
@@ -109,15 +128,15 @@ sc = ax.scatter(df["T_dis_meas_C"], df["T_mix_C"],
 hot = df[df["is_hotspot"]]
 ax.scatter(hot["T_dis_meas_C"], hot["T_mix_C"],
            facecolors="none", edgecolors="C3", s=140, lw=1.4,
-           label=fr"Hotspot ($|e_{{T_{{\mathrm{{dis}}}}}}| > {HOTSPOT_THRESH_K:.0f}\,$K)",
+           label=fr"Hotspot ($|e_{{{T_DIS_TEX}}}| > {HOTSPOT_THRESH_K:.0f}\,$K)",
            zorder=4)
 
 # Colorbar
 cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-cbar.set_label(r"Druckverhältnis $\Pi_{\mathrm{c}} = p_{\mathrm{aus}}/p_{\mathrm{ein}}$")
+cbar.set_label(r"Druckverhältnis $p_{\mathrm{aus}}/p_{\mathrm{ein}}$")
 
 # Achsen
-ax.set_xlabel(r"$T_{\mathrm{dis,meas}}$ in $^\circ$C")
+ax.set_xlabel(rf"${T_DIS_MEAS_TEX}$ in $^\circ$C")
 ax.set_ylabel(r"$T^{(6)}$ in $^\circ$C")
 ax.set_xlim(*PLOT_RANGE_C)
 ax.set_ylim(*PLOT_RANGE_C)
@@ -135,9 +154,10 @@ fig.tight_layout()
 # Ausgabeordner anlegen und speichern
 # =====================================================================
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-out_path = RESULTS_DIR / PLOT_FILENAME
-fig.savefig(out_path, bbox_inches="tight")
-print(f"Plot gespeichert: {out_path}")
+for fmt in OUTPUT_FORMATS:
+    out_path = RESULTS_DIR / f"{PLOT_BASENAME}.{fmt}"
+    fig.savefig(out_path, bbox_inches="tight")
+    print(f"Plot gespeichert: {out_path}")
 
 
 # =====================================================================

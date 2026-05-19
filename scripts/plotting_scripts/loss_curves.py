@@ -16,7 +16,7 @@
 #   python scripts/plotting_scripts/loss_curves.py \
 #       --params_csv results/ga_fit/fitted_params_lpg68_modified_ga_2026-03-19.csv \
 #       --vary T_evap --T_evap_min -5 --T_evap_max 30 \
-#       --T_cond 30 40 50 60 --N_rpm 3600 --SH_K 10
+#       --T_cond 30 40 50 60 --N_rpm 3600 --SH_K 10 --out_format svg
 #
 #   # Sweep T_cond at multiple T_evap levels:
 #   python scripts/plotting_scripts/loss_curves.py --params_csv results/final_results/Modified_LPG100/Fitting/fitted_params_lpg100_modified_ga_2026-03-28_092941.csv --vary T_cond --T_cond_min 25 --T_cond_max 65 --T_evap 0 5 10 15 20 25 --N_rpm 3600 --SH_K 10
@@ -35,7 +35,7 @@
 #
 #   results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv
 #   # Sweep T_evap, plot against pressure ratio:
-#   python scripts/plotting_scripts/loss_curves.py --params_csv results/final_results/Modified_LPG68/Fitting/fitted_params_lpg68_modified_ga_2026-03-22_185546.csv --vary T_cond --T_cond_min 25 --T_cond_max 65 --T_evap 0 --N_rpm 4200 --SH_K 10 --x_axis pressure_ratio
+#   python scripts/plotting_scripts/loss_curves.py --params_csv results/final_results/Molinaroli_LPG68/Fitting/fitted_params_lpg68_original_ga_2026-03-08_101308.csv --vary T_cond --T_cond_min 25 --T_cond_max 65 --T_evap 0 --N_rpm 3600 --SH_K 10 --x_axis pressure_ratio --out_format svg
 #
 #   # Sweep T_evap, plot against pressure ratio:
 #   python scripts/plotting_scripts/loss_curves.py \

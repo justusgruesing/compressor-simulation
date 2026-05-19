@@ -19,7 +19,7 @@
 #
 # Examples:
 #   # Full run:
-#   python scripts/batch_run_thesis_plots.py
+#   python scripts/batch_run_thesis_plots.py --out_format svg --force
 #
 #   # Only parity plots:
 #   python scripts/batch_run_thesis_plots.py --phase A

@@ -44,13 +44,13 @@ plt.style.use("ebc.paper.mplstyle")
 # Constants
 # =========================================================
 OIL_ORDER = ["LPG68", "LPG100", "all"]
-OIL_DISPLAY = {"LPG68": "LPG 68", "LPG100": "LPG 100", "all": "beide"}
+OIL_DISPLAY = {"LPG68": "PAG 68", "LPG100": "PAG 100", "all": "beide"}
 
 MODEL_ORDER = ["original", "modified", "oil_path"]
 MODEL_DISPLAY = {
-    "original": "Original",
-    "modified": "Modified",
-    "oil_path": "Oil Path",
+    "original": "Basis",
+    "modified": "Stufe I",
+    "oil_path": "Stufe II",
 }
 MODEL_SUBDIRS = {
     "original": "original",
@@ -519,20 +519,6 @@ def plot_cross_validation_matrix(
             fig=fig,
         )
 
-    metric_title_map = {
-        "mae": "MAE pro Zielgröße",
-        "rmse": "RMSE pro Zielgröße",
-        "mae_combined": "Aggregierter MAE",
-        "combined_mae": "Aggregierter MAE",
-        "rmse_combined": "Aggregierter RMSE",
-        "combined_rmse": "Aggregierter RMSE",
-    }
-    metric_title = metric_title_map.get(metric.lower(), metric.upper())
-    fig.suptitle(
-        f"Cross-Validierung ({metric_title}) — {model_name.capitalize()} Modell",
-        fontsize=15, y=1.02,
-    )
-
     fig.tight_layout()
     fig.savefig(out_path, format=out_path.suffix.lstrip("."), dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -653,21 +639,6 @@ def plot_model_comparison_matrix(
             cmap="viridis_r",
             fig=fig,
         )
-
-    metric_title_map = {
-        "mae": "MAE pro Zielgröße",
-        "rmse": "RMSE pro Zielgröße",
-        "mae_combined": "Aggregierter MAE",
-        "combined_mae": "Aggregierter MAE",
-        "rmse_combined": "Aggregierter RMSE",
-        "combined_rmse": "Aggregierter RMSE",
-    }
-    metric_title = metric_title_map.get(metric.lower(), metric.upper())
-    oil_disp = OIL_DISPLAY.get(_norm_oil(params_oil), params_oil)
-    fig.suptitle(
-        f"Modellvergleich ({metric_title}) — Parameter: {oil_disp}",
-        fontsize=15, y=1.02,
-    )
 
     fig.tight_layout()
     fig.savefig(out_path, format=out_path.suffix.lstrip("."), dpi=300, bbox_inches="tight")
